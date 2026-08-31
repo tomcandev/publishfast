@@ -311,28 +311,14 @@ a { color: var(--accent); text-underline-offset: 2px; }
 .badge-published { background: #eef2ff; color: #3730a3; border-color: transparent; }
 .badge-draft { background: var(--bg); color: var(--text-faint); }
 
-.badge-media-carousel-7 {
-  background: #fff7ed;
-  color: #c2410c;
-  border-color: #fed7aa;
-  font-weight: 650;
-}
-.badge-media-carousel-4 {
-  background: #eff6ff;
-  color: #1d4ed8;
-  border-color: #bfdbfe;
-  font-weight: 600;
-}
-.badge-media-carousel {
+.badge-media-subtle {
   background: var(--bg);
   color: var(--text-soft);
-  border-color: var(--border);
-}
-.badge-media-video {
-  background: #f5f3ff;
-  color: #6d28d9;
-  border-color: #ddd6fe;
-  font-weight: 600;
+  border: 1px solid var(--border);
+  font-size: 0.72rem;
+  padding: 1px 6px;
+  font-weight: 500;
+  text-transform: lowercase;
 }
 
 .code {
