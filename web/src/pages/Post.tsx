@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useRef, useState } from 'react'
 import { useNavigate, useParams } from 'react-router-dom'
-import { Alert, CopyButton, Empty, Snackbar, Spinner, StatusBadge, formatBytes } from '../components/ui'
+import { Alert, ContentTypeBadge, CopyButton, Empty, Snackbar, Spinner, StatusBadge, formatBytes } from '../components/ui'
 import {
   PLATFORM_LABELS,
   api,
@@ -353,9 +353,7 @@ export function Post() {
       <div className="stack" style={{ gap: 8 }}>
         <div className="row-tight">
           <span className="code">{content.code}</span>
-          <span className="badge" style={{ textTransform: 'capitalize' }}>
-            {content.contentType}
-          </span>
+          <ContentTypeBadge contentType={content.contentType} assetCount={content.assets?.length} />
           <StatusBadge status={content.status} />
         </div>
         {content.title && <h1>{content.title}</h1>}

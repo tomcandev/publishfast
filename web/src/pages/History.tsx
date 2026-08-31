@@ -1,6 +1,6 @@
 import { useEffect, useState } from 'react'
 import { Link } from 'react-router-dom'
-import { Alert, Empty, Spinner, formatDate } from '../components/ui'
+import { Alert, ContentTypeBadge, Empty, Spinner, formatDate } from '../components/ui'
 import { PLATFORM_LABELS, api, type Content } from '../lib/api'
 
 export function History() {
@@ -32,6 +32,7 @@ export function History() {
               <div className="stack min0" style={{ gap: 6, flex: 1 }}>
                 <div className="row-tight">
                   <span className="code">{c.code}</span>
+                  <ContentTypeBadge contentType={c.contentType} assetCount={c.assets?.length} />
                   <span className="hint">{formatDate(c.claimedAt)}</span>
                 </div>
                 {c.title && <div className="truncate" style={{ fontWeight: 550 }}>{c.title}</div>}

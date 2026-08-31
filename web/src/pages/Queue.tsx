@@ -1,7 +1,7 @@
 import { useCallback, useEffect, useState } from 'react'
 import { Link, useNavigate, useSearchParams } from 'react-router-dom'
 import { ReminderSettingsModal } from '../components/ReminderSettingsModal'
-import { Alert, Empty, Spinner, StatusBadge, formatDate } from '../components/ui'
+import { Alert, ContentTypeBadge, Empty, Spinner, StatusBadge, formatDate } from '../components/ui'
 import { ApiError, PLATFORM_LABELS, api, type Content, type Stats } from '../lib/api'
 import { useAuth } from '../lib/auth'
 
@@ -213,9 +213,7 @@ export function Queue() {
                   <div className="stack min0" style={{ gap: 3, flex: 1 }}>
                     <div className="row-tight">
                       <span className="code">{c.code}</span>
-                      <span className="badge" style={{ textTransform: 'capitalize' }}>
-                        {c.contentType}
-                      </span>
+                      <ContentTypeBadge contentType={c.contentType} assetCount={c.assets?.length} />
                       <StatusBadge status={c.status} />
                     </div>
                     <div className="truncate" style={{ color: 'var(--text-soft)', fontSize: '0.9rem' }}>
@@ -237,9 +235,7 @@ export function Queue() {
                     <div className="stack min0" style={{ gap: 3, flex: 1 }}>
                       <div className="row-tight">
                         <span className="code">{c.code}</span>
-                        <span className="badge" style={{ textTransform: 'capitalize' }}>
-                          {c.contentType}
-                        </span>
+                        <ContentTypeBadge contentType={c.contentType} assetCount={c.assets?.length} />
                       </div>
                       <div className="truncate" style={{ color: 'var(--text-soft)', fontSize: '0.9rem' }}>
                         {c.title || c.caption || 'Untitled'}
@@ -280,9 +276,7 @@ export function Queue() {
                   <div className="stack min0" style={{ gap: 4, flex: 1 }}>
                     <div className="row-tight">
                       <span className="code">{c.code}</span>
-                      <span className="badge" style={{ textTransform: 'capitalize' }}>
-                        {c.contentType}
-                      </span>
+                      <ContentTypeBadge contentType={c.contentType} assetCount={c.assets?.length} />
                       <span className="hint">{formatDate(c.claimedAt)}</span>
                     </div>
                     <div className="truncate" style={{ color: 'var(--text)', fontSize: '0.92rem', fontWeight: 550 }}>

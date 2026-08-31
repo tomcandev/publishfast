@@ -13,6 +13,72 @@ export function StatusBadge({ status }: { status: ContentStatus }) {
   return <span className={`badge ${cls}`}>{STATUS_LABELS[status]}</span>
 }
 
+export function ContentTypeBadge({
+  contentType,
+  assetCount,
+}: {
+  contentType: 'video' | 'carousel'
+  assetCount?: number
+}) {
+  if (contentType === 'video') {
+    return (
+      <span className="badge badge-media-video">
+        <VideoIcon size={12} />
+        <span>Video</span>
+      </span>
+    )
+  }
+
+  if (assetCount === 7) {
+    return (
+      <span className="badge badge-media-carousel-7" title="7-Slide Viral Storytelling Carousel">
+        🔥 7 Slides
+      </span>
+    )
+  }
+
+  if (assetCount === 4) {
+    return (
+      <span className="badge badge-media-carousel-4" title="4-Slide Standard Practice Carousel">
+        🖼️ 4 Slides
+      </span>
+    )
+  }
+
+  if (assetCount && assetCount > 0) {
+    return (
+      <span className="badge badge-media-carousel">
+        🖼️ {assetCount} Slides
+      </span>
+    )
+  }
+
+  return (
+    <span className="badge badge-media-carousel" style={{ textTransform: 'capitalize' }}>
+      Carousel
+    </span>
+  )
+}
+
+function VideoIcon({ size = 12 }: { size?: number }) {
+  return (
+    <svg
+      width={size}
+      height={size}
+      viewBox="0 0 24 24"
+      fill="none"
+      stroke="currentColor"
+      strokeWidth="2.2"
+      strokeLinecap="round"
+      strokeLinejoin="round"
+      aria-hidden="true"
+    >
+      <polygon points="23 7 16 12 23 17 23 7" />
+      <rect x="1" y="5" width="15" height="14" rx="2" ry="2" />
+    </svg>
+  )
+}
+
 /** Copy button that confirms inline — the one-tap caption copy from plan.txt §23. */
 export function CopyButton({
   text,
