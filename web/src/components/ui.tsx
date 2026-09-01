@@ -21,20 +21,60 @@ export function ContentTypeBadge({
   assetCount?: number
 }) {
   if (contentType === 'video') {
+    const count = assetCount && assetCount > 0 ? assetCount : 1
     return (
-      <span className="badge badge-media-subtle">
-        video
+      <span className="badge badge-media-subtle" title={`${count} Video(s)`}>
+        <span>{count}</span>
+        <VideoIcon size={11} />
       </span>
     )
   }
 
-  const count = assetCount && assetCount > 0 ? assetCount : null
-  const label = count ? `${count} slides` : 'carousel'
-
+  const count = assetCount && assetCount > 0 ? assetCount : 4
   return (
-    <span className="badge badge-media-subtle">
-      {label}
+    <span className="badge badge-media-subtle" title={`${count} Images`}>
+      <span>{count}</span>
+      <ImageIcon size={11} />
     </span>
+  )
+}
+
+function VideoIcon({ size = 11 }: { size?: number }) {
+  return (
+    <svg
+      width={size}
+      height={size}
+      viewBox="0 0 24 24"
+      fill="none"
+      stroke="currentColor"
+      strokeWidth="2"
+      strokeLinecap="round"
+      strokeLinejoin="round"
+      aria-hidden="true"
+    >
+      <polygon points="23 7 16 12 23 17 23 7" />
+      <rect x="1" y="5" width="15" height="14" rx="2" ry="2" />
+    </svg>
+  )
+}
+
+function ImageIcon({ size = 11 }: { size?: number }) {
+  return (
+    <svg
+      width={size}
+      height={size}
+      viewBox="0 0 24 24"
+      fill="none"
+      stroke="currentColor"
+      strokeWidth="2"
+      strokeLinecap="round"
+      strokeLinejoin="round"
+      aria-hidden="true"
+    >
+      <rect x="3" y="3" width="18" height="18" rx="2" ry="2" />
+      <circle cx="8.5" cy="8.5" r="1.5" />
+      <polyline points="21 15 16 10 5 21" />
+    </svg>
   )
 }
 
