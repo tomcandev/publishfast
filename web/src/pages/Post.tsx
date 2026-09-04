@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useRef, useState } from 'react'
 import { useNavigate, useParams } from 'react-router-dom'
-import { Alert, ContentTypeBadge, CopyButton, Empty, Snackbar, Spinner, StatusBadge, formatBytes, formatDate } from '../components/ui'
+import { Alert, ContentTypeBadge, CopyButton, Empty, Snackbar, Spinner, StatusBadge, formatBytes } from '../components/ui'
 import {
   PLATFORM_LABELS,
   api,
@@ -23,54 +23,18 @@ function detectPlatform(url: string): Platform {
   return 'other'
 }
 
-function getPlatformDeepLink(platform: Platform): { appUrl: string; webUrl: string; altUrl?: string } {
-  const ua = typeof navigator !== 'undefined' ? navigator.userAgent || '' : ''
-  const isIOS = /iPad|iPhone|iPod/.test(ua)
-  const isAndroid = /Android/.test(ua)
-
-  switch (platform) {
-    case 'tiktok':
-      return {
-        appUrl: 'tiktok://',
-        altUrl: isIOS ? 'snssdk1233://' : isAndroid ? 'snssdk1180://' : undefined,
-        webUrl: 'https://www.tiktok.com/',
-      }
-    case 'instagram':
-      return {
-        appUrl: 'instagram://app',
-        webUrl: 'https://www.instagram.com/',
-      }
-    case 'youtube_shorts':
-      return {
-        appUrl: isAndroid ? 'vnd.youtube://' : 'youtube://',
-        webUrl: 'https://www.youtube.com/shorts',
-      }
-    case 'facebook':
-      return {
-        appUrl: 'fb://',
-        webUrl: 'https://www.facebook.com/',
-      }
-    default:
-      return {
-        appUrl: '',
-        webUrl: 'https://www.google.com/',
-      }
-  }
-}
-
 export function Post() {
   const { id } = useParams<{ id: string }>()
   const navigate = useNavigate()
   const [content, setContent] = useState<Content | null>(null)
   const [loading, setLoading] = useState(true)
   const [error, setError] = useState<string | null>(null)
-  const [toastNotice, setToastNotice] = useState<string | null>(null)
   const [urls, setUrls] = useState<Partial<Record<Platform, string>>>({})
   const [saveStatus, setSaveStatus] = useState<Partial<Record<Platform, 'idle' | 'saving' | 'saved'>>>({})
   const [busy, setBusy] = useState(false)
   const [downloading, setDownloading] = useState(false)
   const [captionCopied, setCaptionCopied] = useState(false)
-  const [mode, setMode] = useState<'direct' | 'auto' | 'manual'>('direct')
+  const [mode, setMode] = useState<'auto' | 'manual'>('auto')
   const debounceTimers = useRef<Partial<Record<Platform, NodeJS.Timeout>>>({})
   const preloadedFilesRef = useRef<File[] | null>(null)
 
@@ -307,60 +271,6 @@ export function Post() {
     [content?.caption, handleShareOrDownload],
   )
 
-  // Auto-detect copied post link from clipboard when user returns to PublishFast
-  useEffect(() => {
-    async function checkClipboardOnReturn() {
-      if (document.visibilityState !== 'visible') return
-      try {
-        if (navigator.clipboard && typeof navigator.clipboard.readText === 'function') {
-          const clipText = await navigator.clipboard.readText()
-          if (clipText && clipText.trim().startsWith('http')) {
-            const trimmed = clipText.trim()
-            const detected = detectPlatform(trimmed)
-            if (detected && content) {
-              const alreadySaved = content.publications.find((p) => p.platform === detected)?.publishedUrl
-              if (alreadySaved !== trimmed) {
-                await doSaveLink(detected, trimmed)
-                setToastNotice(`✓ Auto-detected & saved ${PLATFORM_LABELS[detected]} link from clipboard!`)
-                setTimeout(() => setToastNotice(null), 4000)
-              }
-            }
-          }
-        }
-      } catch {
-        // Browser requires direct user click to read clipboard (handled by 1-tap paste button)
-      }
-    }
-
-    window.addEventListener('visibilitychange', checkClipboardOnReturn)
-    window.addEventListener('focus', checkClipboardOnReturn)
-    return () => {
-      window.removeEventListener('visibilitychange', checkClipboardOnReturn)
-      window.removeEventListener('focus', checkClipboardOnReturn)
-    }
-  }, [content, doSaveLink])
-
-  const handleDirectOpenClick = useCallback(
-    (platform: Platform) => {
-      if (!content) return
-
-      // Synchronously copy caption to clipboard (fire-and-forget, preserving native touch gesture on iOS)
-      if (content.caption) {
-        try {
-          navigator.clipboard.writeText(content.caption).catch(() => {})
-          setCaptionCopied(true)
-          setTimeout(() => setCaptionCopied(false), 3000)
-        } catch (err) {
-          console.warn('Failed to copy caption:', err)
-        }
-      }
-
-      setToastNotice(`✓ Caption copied! Opening ${PLATFORM_LABELS[platform]}…`)
-      setTimeout(() => setToastNotice(null), 3500)
-    },
-    [content?.caption],
-  )
-
   async function complete() {
     if (!content) return
     setBusy(true)
@@ -421,15 +331,6 @@ export function Post() {
         <div className="mode-toggle" role="tablist" aria-label="Workflow Mode">
           <button
             type="button"
-            className={`mode-toggle-btn ${mode === 'direct' ? 'active' : ''}`}
-            onClick={() => setMode('direct')}
-            role="tab"
-            aria-selected={mode === 'direct'}
-          >
-            🚀 Direct 1-Tap
-          </button>
-          <button
-            type="button"
             className={`mode-toggle-btn ${mode === 'auto' ? 'active' : ''}`}
             onClick={() => setMode('auto')}
             role="tab"
@@ -459,249 +360,9 @@ export function Post() {
       </div>
 
       {error && <Snackbar message={error} kind="error" onClose={() => setError(null)} />}
-      {toastNotice && <Snackbar message={toastNotice} kind="ok" onClose={() => setToastNotice(null)} />}
-
-      {/* ==================== DIRECT 1-TAP MODE ==================== */}
-      {mode === 'direct' && (
-        <>
-          {/* Quick Guide Card */}
-          <div className="guide-card" aria-label="Direct 1-tap workflow guide">
-            <div className="guide-title">🚀 1-Tap Direct App Posting:</div>
-            <p className="hint" style={{ margin: 0, fontSize: '0.86rem' }}>
-              Tap any platform below to copy the caption, prepare media, and jump directly into the app. When you return with your copied post link, PublishFast auto-detects and saves it!
-            </p>
-          </div>
-
-          {/* Step 1: Media Quick Actions */}
-          {content.assets.length > 0 && (
-            <div className="card stack" style={{ gap: 12 }}>
-              <div className="row" style={{ justifyContent: 'space-between', alignItems: 'center', flexWrap: 'wrap', gap: 8 }}>
-                <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
-                  <span style={{ fontWeight: 650, fontSize: '0.95rem' }}>Step 1: Media</span>
-                  <span className="badge">
-                    {videos.length > 0 ? `${videos.length} Video` : `${images.length} Images`}
-                  </span>
-                </div>
-
-                <div className="row" style={{ gap: 8, flexWrap: 'wrap' }}>
-                  {images.length > 0 ? (
-                    <button
-                      type="button"
-                      className="btn btn-primary btn-sm"
-                      onClick={() => void handleShareOrDownload(images)}
-                      disabled={downloading}
-                      style={{ fontWeight: 650 }}
-                    >
-                      {downloading ? '⏳ Preparing…' : `📸 Save ${images.length} Images to Photos`}
-                    </button>
-                  ) : (
-                    <button
-                      type="button"
-                      className="btn btn-primary btn-sm"
-                      onClick={() => void handleShareOrDownload(videos)}
-                      disabled={downloading}
-                      style={{ fontWeight: 650 }}
-                    >
-                      {downloading ? '⏳ Preparing…' : `🎬 Save Video to Photos`}
-                    </button>
-                  )}
-
-                  <CopyButton
-                    text={content.caption || ''}
-                    label="📋 Copy Caption"
-                    className="btn btn-ghost btn-sm"
-                  />
-
-                  {images.length > 0 && (
-                    <a
-                      href={zipUrl(content.id)}
-                      className="btn btn-sm btn-ghost"
-                      title="Download all as ZIP archive"
-                      style={{ textDecoration: 'none' }}
-                    >
-                      📦 ZIP
-                    </a>
-                  )}
-                </div>
-              </div>
-
-              {/* Media preview */}
-              {images.length > 0 && (
-                <div className="carousel-scroll-gallery" aria-label="Carousel image sequence">
-                  {images.map((img, idx) => (
-                    <a
-                      key={img.id}
-                      href={assetUrl(img.id)}
-                      target="_blank"
-                      rel="noreferrer"
-                      className="carousel-scroll-item"
-                      title={`Slide ${idx + 1}: ${img.originalName} (tap to view full)`}
-                    >
-                      <img className="carousel-scroll-img" src={assetUrl(img.id)} alt={img.originalName} loading="lazy" />
-                      <span className="carousel-scroll-badge">{idx + 1}</span>
-                    </a>
-                  ))}
-                </div>
-              )}
-
-              {videos.length > 0 && (
-                <div>
-                  {videos.map((v) => (
-                    <video key={v.id} className="media" src={assetUrl(v.id)} controls preload="metadata" playsInline />
-                  ))}
-                </div>
-              )}
-            </div>
-          )}
-
-          {/* Top Auto-Paste from Clipboard Button */}
-          <button
-            type="button"
-            className="btn-auto-paste"
-            onClick={() => void handleAutoPasteAny()}
-          >
-            <PasteIcon />
-            <span>📋 Auto-Detect & Paste Link from Clipboard</span>
-          </button>
-
-          {/* Platform Cards */}
-          <div className="direct-platforms-grid">
-            {PLATFORM_ORDER.map((platform) => {
-              const saved = content.publications.find((p) => p.platform === platform)
-              const isSaved = !!saved?.publishedUrl
-              const currentUrl = urls[platform] ?? saved?.publishedUrl ?? ''
-              const status = saveStatus[platform] ?? 'idle'
-              const deepLink = getPlatformDeepLink(platform)
-              const targetUrl = deepLink.appUrl || deepLink.webUrl
-
-              return (
-                <div key={platform} className={`direct-platform-card ${isSaved ? 'saved' : ''}`}>
-                  <div className="direct-platform-header">
-                    <div className="direct-platform-brand">
-                      <div className={`direct-platform-icon ${platform}`}>
-                        <PlatformIcon platform={platform} />
-                      </div>
-                      <div>
-                        <div className="direct-platform-name">{PLATFORM_LABELS[platform]}</div>
-                        <div style={{ fontSize: '0.78rem', color: isSaved ? 'var(--accent)' : 'var(--text-soft)' }}>
-                          {isSaved ? '✓ Published live' : 'Ready to post'}
-                        </div>
-                      </div>
-                    </div>
-
-                    {isSaved ? (
-                      <span className="badge badge-published" style={{ gap: 4 }}>
-                        ✓ Published
-                      </span>
-                    ) : (
-                      <span className="badge badge-ready">Ready</span>
-                    )}
-                  </div>
-
-                  {isSaved && saved?.publishedUrl && (
-                    <div className="direct-link-display">
-                      <a
-                        href={saved.publishedUrl}
-                        target="_blank"
-                        rel="noreferrer"
-                        className="truncate"
-                        style={{ color: 'var(--accent)', fontWeight: 600, textDecoration: 'none', flex: 1 }}
-                        title={saved.publishedUrl}
-                      >
-                        {saved.publishedUrl} ↗
-                      </a>
-                      <span className="hint" style={{ flexShrink: 0, fontSize: '0.75rem' }}>
-                        {saved.publishedAt ? formatDate(saved.publishedAt) : ''}
-                      </span>
-                    </div>
-                  )}
-
-                  <div className="direct-platform-actions">
-                    <a
-                      href={targetUrl}
-                      className={`btn-direct-open ${isSaved ? 'btn-direct-reopen' : ''}`}
-                      onClick={() => handleDirectOpenClick(platform)}
-                      title={`Copy caption and open ${PLATFORM_LABELS[platform]}`}
-                      style={{ textDecoration: 'none' }}
-                    >
-                      {isSaved ? (
-                        <>
-                          <span>🔄 Re-open in {PLATFORM_LABELS[platform]}</span>
-                        </>
-                      ) : (
-                        <>
-                          <span>🚀 Open {PLATFORM_LABELS[platform]} App</span>
-                        </>
-                      )}
-                    </a>
-
-                    {deepLink.altUrl && !isSaved && (
-                      <a
-                        href={deepLink.altUrl}
-                        className="btn btn-ghost btn-sm"
-                        onClick={() => handleDirectOpenClick(platform)}
-                        title={`Alternative link (${deepLink.altUrl})`}
-                        style={{ textDecoration: 'none', fontSize: '0.8rem', padding: '8px 10px' }}
-                      >
-                        Alt Link
-                      </a>
-                    )}
-
-                    <a
-                      href={deepLink.webUrl}
-                      target="_blank"
-                      rel="noreferrer"
-                      className="btn btn-ghost btn-sm"
-                      title={`Open ${PLATFORM_LABELS[platform]} in browser`}
-                      style={{ textDecoration: 'none', fontSize: '0.8rem', padding: '8px 10px' }}
-                    >
-                      Web ↗
-                    </a>
-
-                    <button
-                      type="button"
-                      className="btn-direct-paste"
-                      onClick={() => void handlePaste(platform)}
-                      disabled={status === 'saving'}
-                      title={`Paste copied link for ${PLATFORM_LABELS[platform]}`}
-                    >
-                      {status === 'saving' ? (
-                        <span>Saving…</span>
-                      ) : isSaved ? (
-                        <>
-                          <PasteIcon />
-                          <span>Update Link</span>
-                        </>
-                      ) : (
-                        <>
-                          <PasteIcon />
-                          <span>Paste Link</span>
-                        </>
-                      )}
-                    </button>
-                  </div>
-
-                  <div className="row-tight" style={{ marginTop: 2 }}>
-                    <input
-                      className="input input-sm"
-                      type="url"
-                      placeholder={`Or enter ${PLATFORM_LABELS[platform]} URL manually…`}
-                      value={currentUrl}
-                      onChange={(e) => handleUrlChange(platform, e.target.value)}
-                      onBlur={() => handleUrlBlur(platform)}
-                      style={{ fontSize: '0.8rem' }}
-                      disabled={status === 'saving'}
-                    />
-                  </div>
-                </div>
-              )
-            })}
-          </div>
-        </>
-      )}
 
       {/* ==================== AUTO MODE (2 STEPS) ==================== */}
-      {mode === 'auto' && (
+      {mode === 'auto' ? (
         <>
           {/* Quick 2-step Guide Card */}
           <div className="guide-card" aria-label="Auto workflow guide">
@@ -853,10 +514,8 @@ export function Post() {
             </div>
           </div>
         </>
-      )}
-
-      {/* ==================== MANUAL MODE (3 STEPS) ==================== */}
-      {mode === 'manual' && (
+      ) : (
+        /* ==================== MANUAL MODE (3 STEPS) ==================== */
         <>
           {/* 3-step quick guide */}
           <div className="guide-card" aria-label="Manual workflow guide">
