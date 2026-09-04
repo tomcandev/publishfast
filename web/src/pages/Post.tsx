@@ -23,7 +23,7 @@ function detectPlatform(url: string): Platform {
   return 'other'
 }
 
-function getPlatformDeepLink(platform: Platform): { appUrl: string; webUrl: string } {
+function getPlatformDeepLink(platform: Platform): { appUrl: string; webUrl: string; altUrl?: string } {
   const ua = typeof navigator !== 'undefined' ? navigator.userAgent || '' : ''
   const isIOS = /iPad|iPhone|iPod/.test(ua)
   const isAndroid = /Android/.test(ua)
@@ -31,7 +31,8 @@ function getPlatformDeepLink(platform: Platform): { appUrl: string; webUrl: stri
   switch (platform) {
     case 'tiktok':
       return {
-        appUrl: isIOS ? 'snssdk1233://' : isAndroid ? 'snssdk1180://' : 'tiktok://',
+        appUrl: 'tiktok://',
+        altUrl: isIOS ? 'snssdk1233://' : isAndroid ? 'snssdk1180://' : undefined,
         webUrl: 'https://www.tiktok.com/',
       }
     case 'instagram':
@@ -339,57 +340,25 @@ export function Post() {
     }
   }, [content, doSaveLink])
 
-  const handleDirectOpenPlatform = useCallback(
-    async (platform: Platform) => {
+  const handleDirectOpenClick = useCallback(
+    (platform: Platform) => {
       if (!content) return
 
-      // 1. Auto-copy caption to clipboard
+      // Synchronously copy caption to clipboard (fire-and-forget, preserving native touch gesture on iOS)
       if (content.caption) {
         try {
-          await navigator.clipboard.writeText(content.caption)
+          navigator.clipboard.writeText(content.caption).catch(() => {})
           setCaptionCopied(true)
-          setTimeout(() => setCaptionCopied(false), 3500)
+          setTimeout(() => setCaptionCopied(false), 3000)
         } catch (err) {
           console.warn('Failed to copy caption:', err)
         }
       }
 
-      // 2. Trigger media download so files are on user's device
-      if (content.assets?.length) {
-        const vids = content.assets.filter((a) => a.type === 'video')
-        const imgs = content.assets.filter((a) => a.type === 'image')
-
-        if (content.contentType === 'video' && vids.length > 0) {
-          const v = vids[0]!
-          const link = document.createElement('a')
-          link.href = assetDownloadUrl(v.id)
-          link.download = v.originalName || `${content.code || 'video'}.mp4`
-          document.body.appendChild(link)
-          link.click()
-          document.body.removeChild(link)
-        } else if (imgs.length > 0) {
-          void handleDownloadAllSeparate(imgs)
-        }
-      }
-
       setToastNotice(`✓ Caption copied! Opening ${PLATFORM_LABELS[platform]}…`)
       setTimeout(() => setToastNotice(null), 3500)
-
-      // 3. Launch Native App via Deep Link with web fallback
-      const { appUrl, webUrl } = getPlatformDeepLink(platform)
-      if (appUrl) {
-        const start = Date.now()
-        window.location.href = appUrl
-        setTimeout(() => {
-          if (document.visibilityState === 'visible' && Date.now() - start < 2400) {
-            window.open(webUrl, '_blank')
-          }
-        }, 1400)
-      } else {
-        window.open(webUrl, '_blank')
-      }
     },
-    [content, handleDownloadAllSeparate],
+    [content?.caption],
   )
 
   async function complete() {
@@ -503,52 +472,55 @@ export function Post() {
             </p>
           </div>
 
-          {/* Media Quick Actions & Thumbnail Preview */}
+          {/* Step 1: Media Quick Actions */}
           {content.assets.length > 0 && (
             <div className="card stack" style={{ gap: 12 }}>
               <div className="row" style={{ justifyContent: 'space-between', alignItems: 'center', flexWrap: 'wrap', gap: 8 }}>
                 <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
-                  <span style={{ fontWeight: 650, fontSize: '0.95rem' }}>Attached Media</span>
+                  <span style={{ fontWeight: 650, fontSize: '0.95rem' }}>Step 1: Media</span>
                   <span className="badge">
                     {videos.length > 0 ? `${videos.length} Video` : `${images.length} Images`}
                   </span>
                 </div>
 
-                <div className="row" style={{ gap: 8 }}>
+                <div className="row" style={{ gap: 8, flexWrap: 'wrap' }}>
+                  {images.length > 0 ? (
+                    <button
+                      type="button"
+                      className="btn btn-primary btn-sm"
+                      onClick={() => void handleShareOrDownload(images)}
+                      disabled={downloading}
+                      style={{ fontWeight: 650 }}
+                    >
+                      {downloading ? '⏳ Preparing…' : `📸 Save ${images.length} Images to Photos`}
+                    </button>
+                  ) : (
+                    <button
+                      type="button"
+                      className="btn btn-primary btn-sm"
+                      onClick={() => void handleShareOrDownload(videos)}
+                      disabled={downloading}
+                      style={{ fontWeight: 650 }}
+                    >
+                      {downloading ? '⏳ Preparing…' : `🎬 Save Video to Photos`}
+                    </button>
+                  )}
+
                   <CopyButton
                     text={content.caption || ''}
                     label="📋 Copy Caption"
                     className="btn btn-ghost btn-sm"
                   />
 
-                  {videos.length > 0 ? (
+                  {images.length > 0 && (
                     <a
-                      href={assetDownloadUrl(videos[0]!.id)}
-                      download={videos[0]!.originalName || 'video.mp4'}
-                      className="btn btn-sm btn-outline"
-                      style={{ textDecoration: 'none', display: 'inline-flex', alignItems: 'center', gap: 4 }}
+                      href={zipUrl(content.id)}
+                      className="btn btn-sm btn-ghost"
+                      title="Download all as ZIP archive"
+                      style={{ textDecoration: 'none' }}
                     >
-                      ⬇️ Download Video ({formatBytes(videosTotalSize)})
+                      📦 ZIP
                     </a>
-                  ) : (
-                    <div className="row" style={{ gap: 6 }}>
-                      <button
-                        type="button"
-                        className="btn btn-sm btn-outline"
-                        onClick={() => void handleDownloadAllSeparate(images)}
-                        disabled={downloading}
-                      >
-                        {downloading ? '⏳ Downloading…' : `⬇️ Download All (${images.length} imgs)`}
-                      </button>
-                      <a
-                        href={zipUrl(content.id)}
-                        className="btn btn-sm btn-ghost"
-                        title="Download all as ZIP archive"
-                        style={{ textDecoration: 'none' }}
-                      >
-                        📦 ZIP
-                      </a>
-                    </div>
                   )}
                 </div>
               </div>
@@ -599,6 +571,8 @@ export function Post() {
               const isSaved = !!saved?.publishedUrl
               const currentUrl = urls[platform] ?? saved?.publishedUrl ?? ''
               const status = saveStatus[platform] ?? 'idle'
+              const deepLink = getPlatformDeepLink(platform)
+              const targetUrl = deepLink.appUrl || deepLink.webUrl
 
               return (
                 <div key={platform} className={`direct-platform-card ${isSaved ? 'saved' : ''}`}>
@@ -643,11 +617,12 @@ export function Post() {
                   )}
 
                   <div className="direct-platform-actions">
-                    <button
-                      type="button"
+                    <a
+                      href={targetUrl}
                       className={`btn-direct-open ${isSaved ? 'btn-direct-reopen' : ''}`}
-                      onClick={() => void handleDirectOpenPlatform(platform)}
-                      title={`Copy caption, prepare media, and open ${PLATFORM_LABELS[platform]}`}
+                      onClick={() => handleDirectOpenClick(platform)}
+                      title={`Copy caption and open ${PLATFORM_LABELS[platform]}`}
+                      style={{ textDecoration: 'none' }}
                     >
                       {isSaved ? (
                         <>
@@ -655,10 +630,33 @@ export function Post() {
                         </>
                       ) : (
                         <>
-                          <span>🚀 Open {PLATFORM_LABELS[platform]}</span>
+                          <span>🚀 Open {PLATFORM_LABELS[platform]} App</span>
                         </>
                       )}
-                    </button>
+                    </a>
+
+                    {deepLink.altUrl && !isSaved && (
+                      <a
+                        href={deepLink.altUrl}
+                        className="btn btn-ghost btn-sm"
+                        onClick={() => handleDirectOpenClick(platform)}
+                        title={`Alternative link (${deepLink.altUrl})`}
+                        style={{ textDecoration: 'none', fontSize: '0.8rem', padding: '8px 10px' }}
+                      >
+                        Alt Link
+                      </a>
+                    )}
+
+                    <a
+                      href={deepLink.webUrl}
+                      target="_blank"
+                      rel="noreferrer"
+                      className="btn btn-ghost btn-sm"
+                      title={`Open ${PLATFORM_LABELS[platform]} in browser`}
+                      style={{ textDecoration: 'none', fontSize: '0.8rem', padding: '8px 10px' }}
+                    >
+                      Web ↗
+                    </a>
 
                     <button
                       type="button"
