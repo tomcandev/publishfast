@@ -190,6 +190,7 @@ Content-Type: multipart/form-data (field: file)
     - **Frequency Domain SynthID Disruption**: Inject subtle micro-dithering (`scale ~ 1.5`) to disrupt spatial frequency watermarking without degrading visual clarity.
     - **Authentic Creator Software Metadata Injection**: Injects genuine graphic photo-editor export signatures (`Adobe Photoshop 25.11`, `CapCut for iOS`, `Canva Editor`, `Apple Photos/iOS ImageIO`, `ColorSpace: sRGB`), exactly matching how creators naturally design and export carousels.
     - **Format**: Export as clean, high-quality editor JPEG (`quality=95, subsampling=0`).
+* **Queue Backlog Throttling (> 15 items)**: The daily content generation pipeline monitors the PublishFast remaining queue count (`READY` + `CLAIMED`). If the backlog exceeds 15 posts, generation and upload (Steps 1-3) are automatically paused to prevent overwhelming KOL queues, while Step 4 (Daily Performance Report) continues to execute. Can be bypassed via `--force` or `FORCE_GENERATE=1`.
 * Always preserve atomic CAS patterns for any state transitions
 * Keep all dependencies strictly MIT or Apache-2.0
 * Maintain route-level permission checks for all new endpoints
