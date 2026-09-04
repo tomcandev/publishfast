@@ -1301,6 +1301,168 @@ input:checked + .slider:before {
   margin-top: 1px;
 }
 
+/* ---------- Direct 1-Tap Platform Cards ---------- */
+.direct-platforms-grid {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+}
+
+.direct-platform-card {
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  padding: 14px 16px;
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  transition: border-color 0.15s ease, box-shadow 0.15s ease;
+}
+
+.direct-platform-card.saved {
+  border-color: var(--accent);
+  background: linear-gradient(180deg, var(--surface) 0%, var(--accent-soft) 100%);
+}
+
+.direct-platform-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+}
+
+.direct-platform-brand {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+}
+
+.direct-platform-icon {
+  width: 34px;
+  height: 34px;
+  border-radius: 8px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  flex-shrink: 0;
+}
+
+.direct-platform-icon.tiktok {
+  background: #000;
+  color: #fff;
+}
+
+.direct-platform-icon.instagram {
+  background: linear-gradient(45deg, #f09433 0%, #e6683c 25%, #dc2743 50%, #cc2366 75%, #bc1888 100%);
+  color: #fff;
+}
+
+.direct-platform-icon.youtube_shorts {
+  background: #ff0000;
+  color: #fff;
+}
+
+.direct-platform-icon.facebook {
+  background: #1877f2;
+  color: #fff;
+}
+
+.direct-platform-icon.other {
+  background: var(--bg);
+  color: var(--text);
+  border: 1px solid var(--border);
+}
+
+.direct-platform-name {
+  font-weight: 650;
+  font-size: 0.98rem;
+}
+
+.direct-platform-actions {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-wrap: wrap;
+}
+
+.btn-direct-open {
+  flex: 1;
+  min-width: 150px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 8px;
+  padding: 10px 16px;
+  font-weight: 650;
+  font-size: 0.92rem;
+  border-radius: var(--radius-sm);
+  background: var(--text);
+  color: var(--bg);
+  border: none;
+  cursor: pointer;
+  transition: opacity 0.15s ease, transform 0.1s ease;
+}
+
+.btn-direct-open:hover {
+  opacity: 0.92;
+}
+
+.btn-direct-open:active {
+  transform: scale(0.98);
+}
+
+.btn-direct-reopen {
+  background: var(--bg);
+  color: var(--text);
+  border: 1px solid var(--border);
+  font-weight: 600;
+  font-size: 0.85rem;
+}
+
+.btn-direct-reopen:hover {
+  background: var(--surface);
+  border-color: var(--accent);
+}
+
+.btn-direct-paste {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 6px;
+  padding: 10px 16px;
+  font-weight: 650;
+  font-size: 0.9rem;
+  border-radius: var(--radius-sm);
+  background: var(--accent-soft);
+  color: var(--accent);
+  border: 1px solid var(--accent);
+  cursor: pointer;
+  transition: all 0.15s ease;
+  white-space: nowrap;
+}
+
+.btn-direct-paste:hover {
+  background: var(--accent);
+  color: #fff;
+}
+
+.btn-direct-paste:disabled {
+  opacity: 0.6;
+  cursor: not-allowed;
+}
+
+.direct-link-display {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  padding: 8px 12px;
+  background: var(--bg);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  font-size: 0.85rem;
+}
+
 @media (max-width: 680px) {
   .guide-steps {
     grid-template-columns: 1fr;
