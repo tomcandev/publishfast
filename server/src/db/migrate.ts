@@ -5,6 +5,27 @@
  */
 import { sqlite } from './index.js'
 
+/**
+ * Columns added after a table first shipped. Each is added with ALTER TABLE
+ * only when table_info shows it missing, so this is safe on any older
+ * database. All are nullable or defaulted: existing rows keep their meaning
+ * (a NULL api_tokens.scope is an old token and behaves exactly as before).
+ */
+const addedColumns: [table: string, column: string, ddl: string][] = [
+  ['users', 'assigned_only', 'INTEGER NOT NULL DEFAULT 0'],
+  ['contents', 'release_at', 'TEXT'],
+  ['contents', 'publish_at', 'TEXT'],
+  ['contents', 'meta', 'TEXT'],
+  ['contents', 'source', 'TEXT'],
+  ['contents', 'created_by_token', 'TEXT'],
+  ['api_tokens', 'scope', 'TEXT'],
+  ['api_tokens', 'user_id', 'TEXT'],
+  ['api_tokens', 'assignees', 'TEXT'],
+  ['api_tokens', 'expires_at', 'TEXT'],
+  ['api_tokens', 'revoked_at', 'TEXT'],
+  ['api_tokens', 'created_by', 'TEXT'],
+]
+
 const statements = [
   `CREATE TABLE IF NOT EXISTS users (
     id TEXT PRIMARY KEY,
@@ -16,6 +37,7 @@ const statements = [
     active INTEGER NOT NULL DEFAULT 1,
     notes TEXT,
     bio_link TEXT,
+    assigned_only INTEGER NOT NULL DEFAULT 0,
     created_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ','now'))
   )`,
   `CREATE UNIQUE INDEX IF NOT EXISTS users_username_unique ON users (username)`,
@@ -32,12 +54,19 @@ const statements = [
     claimed_by TEXT REFERENCES users(id) ON DELETE SET NULL,
     claimed_at TEXT,
     hook_id TEXT,
+    release_at TEXT,
+    publish_at TEXT,
+    meta TEXT,
+    source TEXT,
+    created_by_token TEXT,
     created_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ','now'))
   )`,
   `CREATE UNIQUE INDEX IF NOT EXISTS contents_code_unique ON contents (code)`,
   `CREATE INDEX IF NOT EXISTS contents_status_created_idx ON contents (status, created_at)`,
   `CREATE INDEX IF NOT EXISTS contents_claimed_by_idx ON contents (claimed_by)`,
   `CREATE INDEX IF NOT EXISTS contents_hook_id_idx ON contents (hook_id)`,
+  `CREATE INDEX IF NOT EXISTS contents_release_idx ON contents (status, release_at)`,
+  `CREATE INDEX IF NOT EXISTS contents_created_by_token_idx ON contents (created_by_token)`,
 
   `CREATE TABLE IF NOT EXISTS assets (
     id TEXT PRIMARY KEY,
@@ -78,9 +107,42 @@ const statements = [
     token_hash TEXT NOT NULL,
     role TEXT NOT NULL DEFAULT 'admin',
     created_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ','now')),
-    last_used_at TEXT
+    last_used_at TEXT,
+    scope TEXT,
+    user_id TEXT,
+    assignees TEXT,
+    expires_at TEXT,
+    revoked_at TEXT,
+    created_by TEXT
   )`,
   `CREATE UNIQUE INDEX IF NOT EXISTS api_tokens_hash_unique ON api_tokens (token_hash)`,
+  `CREATE INDEX IF NOT EXISTS api_tokens_name_idx ON api_tokens (name)`,
+
+  `CREATE TABLE IF NOT EXISTS metric_snapshots (
+    id TEXT PRIMARY KEY,
+    publication_id TEXT NOT NULL REFERENCES publications(id) ON DELETE CASCADE,
+    taken_at TEXT NOT NULL,
+    label TEXT,
+    views INTEGER,
+    likes INTEGER,
+    comments INTEGER,
+    shares INTEGER,
+    extra TEXT,
+    created_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ','now')),
+    token_id TEXT
+  )`,
+  `CREATE INDEX IF NOT EXISTS metric_snapshots_pub_taken_idx ON metric_snapshots (publication_id, taken_at)`,
+
+  `CREATE TABLE IF NOT EXISTS token_events (
+    id TEXT PRIMARY KEY,
+    token_id TEXT NOT NULL,
+    at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ','now')),
+    action TEXT NOT NULL,
+    content_id TEXT,
+    publication_id TEXT,
+    ip TEXT
+  )`,
+  `CREATE INDEX IF NOT EXISTS token_events_token_at_idx ON token_events (token_id, at)`,
 
   `CREATE TABLE IF NOT EXISTS reminder_settings (
     user_id TEXT PRIMARY KEY REFERENCES users(id) ON DELETE CASCADE,
@@ -147,6 +209,13 @@ export function migrate() {
     }
     if (!pubCols.some((c) => c.name === 'metric_error')) {
       sqlite.exec('ALTER TABLE publications ADD COLUMN metric_error TEXT')
+    }
+
+    for (const [table, column, ddl] of addedColumns) {
+      const cols = sqlite.pragma(`table_info(${table})`) as { name: string }[]
+      if (!cols.some((c) => c.name === column)) {
+        sqlite.exec(`ALTER TABLE ${table} ADD COLUMN ${column} ${ddl}`)
+      }
     }
 
     // 3. Create indexes now that all columns are guaranteed to exist
