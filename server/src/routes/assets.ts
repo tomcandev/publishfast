@@ -2,9 +2,10 @@ import { createReadStream, existsSync } from 'node:fs'
 import { basename, join, resolve } from 'node:path'
 import archiver from 'archiver'
 import type { FastifyInstance } from 'fastify'
-import { and, asc, eq, isNull, or } from 'drizzle-orm'
+import { and, asc, eq, or } from 'drizzle-orm'
 import { db } from '../db/index.js'
 import { assets, contents, type User } from '../db/schema.js'
+import { claimableBy } from '../lib/claim.js'
 import { config } from '../lib/config.js'
 import { requireUser } from '../lib/guards.js'
 
@@ -19,13 +20,7 @@ function canSeeContent(contentId: string, user: User) {
     .where(
       and(
         eq(contents.id, contentId),
-        or(
-          and(
-            eq(contents.status, 'READY'),
-            or(isNull(contents.assignedUserId), eq(contents.assignedUserId, user.id)),
-          ),
-          eq(contents.claimedBy, user.id),
-        ),
+        or(claimableBy(user.id, user.assignedOnly), eq(contents.claimedBy, user.id)),
       ),
     )
     .get()

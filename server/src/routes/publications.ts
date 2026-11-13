@@ -10,7 +10,12 @@ const upsertSchema = z.object({
   contentId: z.string().min(1),
   platform: z.enum(PLATFORMS),
   publishedUrl: z.string().url('Invalid URL'),
-  publishedAt: z.string().datetime().optional(),
+  /** The public time (e.g. a scheduled video's). A `Z` time is stored as sent; an offset is converted to UTC. */
+  publishedAt: z
+    .string()
+    .datetime({ offset: true })
+    .transform((s) => (s.endsWith('Z') ? s : new Date(s).toISOString()))
+    .optional(),
 })
 
 export async function publicationRoutes(app: FastifyInstance) {
@@ -58,11 +63,13 @@ export async function publicationRoutes(app: FastifyInstance) {
 
     if (existing) {
       db.update(publications).set(values).where(eq(publications.id, existing.id)).run()
+      req.audit = { contentId, publicationId: existing.id }
       return { publication: db.select().from(publications).where(eq(publications.id, existing.id)).get() }
     }
 
     const id = randomUUID()
     db.insert(publications).values({ id, contentId, platform, ...values }).run()
+    req.audit = { contentId, publicationId: id }
     return { publication: db.select().from(publications).where(eq(publications.id, id)).get() }
   })
 
@@ -77,6 +84,7 @@ export async function publicationRoutes(app: FastifyInstance) {
     }
 
     db.delete(publications).where(eq(publications.id, id)).run()
+    req.audit = { contentId: row.contentId, publicationId: id }
     return { ok: true }
   })
 }

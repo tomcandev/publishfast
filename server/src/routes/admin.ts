@@ -1,7 +1,7 @@
 import { unlink } from 'node:fs/promises'
 import { join } from 'node:path'
 import type { FastifyInstance } from 'fastify'
-import { asc, desc, eq, inArray } from 'drizzle-orm'
+import { asc, desc, eq, inArray, sql } from 'drizzle-orm'
 import { z } from 'zod'
 import { db } from '../db/index.js'
 import { ROLES, apiTokens, assets, contents, publications, pushSubscriptions, reminderSettings, users } from '../db/schema.js'
@@ -63,6 +63,8 @@ export async function adminRoutes(app: FastifyInstance) {
         password: z.string().min(8, 'Password must be at least 8 characters').optional().or(z.literal('')),
         notes: z.string().max(1000).optional().or(z.literal('')).nullable(),
         bioLink: z.string().url().optional().or(z.literal('')).nullable(),
+        /** Only ever sees content assigned to them, never the open queue. */
+        assignedOnly: z.boolean().optional(),
       })
       .safeParse(req.body)
     if (!body.success) return reply.code(400).send({ error: body.error.issues[0]?.message ?? 'Invalid input' })
@@ -166,6 +168,9 @@ export async function adminRoutes(app: FastifyInstance) {
     if (body.data.contentType !== undefined) patch.contentType = body.data.contentType
     if (body.data.status !== undefined) patch.status = body.data.status
     if (body.data.assignedUserId !== undefined) patch.assignedUserId = body.data.assignedUserId || null
+    // Sending an item back to DRAFT (soft-archive) also cancels a pending timed release,
+    // otherwise the release scheduler would put it straight back in the queue.
+    if (body.data.status === 'DRAFT' && existing.status !== 'DRAFT') patch.releaseAt = null
 
     try {
       db.update(contents).set(patch).where(eq(contents.id, id)).run()
@@ -238,7 +243,17 @@ export async function adminRoutes(app: FastifyInstance) {
       return reply.code(400).send({ error: parsed.error.issues[0]?.message ?? 'Invalid input' })
     }
     const { ids, status } = parsed.data
-    const result = db.update(contents).set({ status }).where(inArray(contents.id, ids)).run()
+    // As in PATCH: moving an item to DRAFT cancels its pending timed release
+    // (items that already were drafts keep theirs; SET sees the old status).
+    const result = db
+      .update(contents)
+      .set(
+        status === 'DRAFT'
+          ? { status, releaseAt: sql`CASE WHEN ${contents.status} = 'DRAFT' THEN ${contents.releaseAt} ELSE NULL END` }
+          : { status },
+      )
+      .where(inArray(contents.id, ids))
+      .run()
     return { updated: result.changes }
   })
 
@@ -269,6 +284,9 @@ export async function adminRoutes(app: FastifyInstance) {
         role: apiTokens.role,
         createdAt: apiTokens.createdAt,
         lastUsedAt: apiTokens.lastUsedAt,
+        scope: apiTokens.scope,
+        expiresAt: apiTokens.expiresAt,
+        revokedAt: apiTokens.revokedAt,
       })
       .from(apiTokens)
       .orderBy(desc(apiTokens.createdAt))
@@ -281,7 +299,8 @@ export async function adminRoutes(app: FastifyInstance) {
       .safeParse(req.body)
     if (!body.success) return reply.code(400).send({ error: 'Token name is required' })
 
-    const token = createApiToken(body.data.name, body.data.role)
+    // Stays an unscoped token, exactly as before; scoped tokens are made with the CLI.
+    const token = createApiToken(body.data.name, body.data.role, { createdBy: req.user?.id ?? null })
     // Shown once — only the hash is stored.
     return reply.code(201).send({ token })
   })

@@ -1,8 +1,8 @@
 import type { FastifyInstance } from 'fastify'
-import { and, asc, desc, eq, inArray, isNull, or, sql } from 'drizzle-orm'
+import { and, asc, desc, eq, inArray, or, sql } from 'drizzle-orm'
 import { db } from '../db/index.js'
 import { assets, contents, publications, users, type Content, type User } from '../db/schema.js'
-import { claimContent, claimNext, releaseContent } from '../lib/claim.js'
+import { claimContent, claimNext, claimableBy, releaseContent } from '../lib/claim.js'
 import { requireUser } from '../lib/guards.js'
 
 /**
@@ -14,18 +14,13 @@ import { requireUser } from '../lib/guards.js'
  * to read and edit every row. Here it is an ordinary WHERE clause that cannot
  * be configured away.
  */
-function visibleToKol(userId: string) {
-  return or(
-    and(
-      eq(contents.status, 'READY'),
-      or(isNull(contents.assignedUserId), eq(contents.assignedUserId, userId)),
-    ),
-    eq(contents.claimedBy, userId),
-  )
+function visibleToKol(user: User) {
+  // An assigned_only user never sees the open queue (see claimableBy).
+  return or(claimableBy(user.id, user.assignedOnly), eq(contents.claimedBy, user.id))
 }
 
 function scopeFor(user: User) {
-  return user.role === 'admin' ? undefined : visibleToKol(user.id)
+  return user.role === 'admin' ? undefined : visibleToKol(user)
 }
 
 /** Attaches assets and publications to a set of contents in two queries. */
@@ -42,7 +37,8 @@ function hydrate(rows: Content[]) {
 
   const pubRows = db.select().from(publications).where(inArray(publications.contentId, ids)).all()
 
-  return rows.map((row) => ({
+  // created_by_token is internal bookkeeping for ingest tokens; the queue never needs it.
+  return rows.map(({ createdByToken: _internal, ...row }) => ({
     ...row,
     assets: assetRows
       .filter((a) => a.contentId === row.id)
@@ -80,12 +76,7 @@ export async function contentRoutes(app: FastifyInstance) {
     const available = db
       .select({ n: sql<number>`count(*)` })
       .from(contents)
-      .where(
-        and(
-          eq(contents.status, 'READY'),
-          or(isNull(contents.assignedUserId), eq(contents.assignedUserId, user.id)),
-        ),
-      )
+      .where(claimableBy(user.id, user.assignedOnly))
       .get()
 
     const mine = db
@@ -121,16 +112,18 @@ export async function contentRoutes(app: FastifyInstance) {
 
   /** Claim the next available item — the "Claim next post" button. */
   app.post('/api/contents/claim-next', async (req, reply) => {
-    const result = claimNext(req.user!.id)
+    const user = req.user!
+    const result = claimNext(user.id, { assignedOnly: user.assignedOnly })
     if (!result.ok) {
       return reply.code(404).send({ error: 'No posts are currently ready', reason: result.reason })
     }
+    req.audit = { contentId: result.content.id }
     return { content: hydrate([result.content])[0] }
   })
 
   app.post('/api/contents/:id/claim', async (req, reply) => {
     const { id } = req.params as { id: string }
-    const result = claimContent(id, req.user!.id)
+    const result = claimContent(id, req.user!.id, { assignedOnly: req.user!.assignedOnly })
     if (!result.ok) {
       const code = result.reason === 'not_found' ? 404 : 409
       const error =

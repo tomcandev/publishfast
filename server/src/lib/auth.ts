@@ -3,7 +3,7 @@ import { hash as argonHash, verify as argonVerify } from '@node-rs/argon2'
 import { eq, or, sql } from 'drizzle-orm'
 import { SignJWT, jwtVerify } from 'jose'
 import { db } from '../db/index.js'
-import { apiTokens, users, type User } from '../db/schema.js'
+import { apiTokens, users, type TokenScope, type User } from '../db/schema.js'
 import { config } from './config.js'
 
 const secret = new TextEncoder().encode(config.authSecret)
@@ -94,28 +94,55 @@ export async function createUser(input: {
   return findUserById(user.id)!
 }
 
-/* ---------- API tokens (for the AI ingestion pipeline) ---------- */
+/* ---------- API tokens (for the AI ingestion pipeline and agents) ---------- */
 
 function hashToken(token: string) {
   return createHash('sha256').update(token).digest('hex')
 }
 
-export function createApiToken(name: string, role: 'admin' | 'kol' = 'admin') {
+export type TokenSettings = {
+  scope?: TokenScope | null
+  userId?: string | null
+  assignees?: string[] | null
+  expiresAt?: string | null
+  createdBy?: string | null
+}
+
+/**
+ * Creates a token and returns its plaintext. Called with only a name and a
+ * role it writes exactly the row it always did (scope NULL), which is what
+ * the web admin page and the seed script still do.
+ */
+export function createApiToken(name: string, role: 'admin' | 'kol' = 'admin', settings: TokenSettings = {}) {
   const plaintext = `pf_${randomBytes(24).toString('hex')}`
   db.insert(apiTokens)
-    .values({ id: randomUUID(), name, tokenHash: hashToken(plaintext), role })
+    .values({
+      id: randomUUID(),
+      name,
+      tokenHash: hashToken(plaintext),
+      role,
+      scope: settings.scope ?? null,
+      userId: settings.userId ?? null,
+      assignees: settings.assignees ?? null,
+      expiresAt: settings.expiresAt ?? null,
+      createdBy: settings.createdBy ?? null,
+    })
     .run()
   // Returned once and never recoverable — only the hash is stored.
   return plaintext
 }
 
+/**
+ * Looks a token up by its SHA-256. A revoked or expired token resolves to
+ * null, exactly like an unknown one, so callers cannot tell them apart.
+ */
 export function resolveApiToken(token: string) {
   const row = db.select().from(apiTokens).where(eq(apiTokens.tokenHash, hashToken(token))).get()
   if (!row) return null
-  db.update(apiTokens)
-    .set({ lastUsedAt: new Date().toISOString() })
-    .where(eq(apiTokens.id, row.id))
-    .run()
+  const now = new Date().toISOString()
+  if (row.revokedAt) return null
+  if (row.expiresAt && row.expiresAt <= now) return null
+  db.update(apiTokens).set({ lastUsedAt: now }).where(eq(apiTokens.id, row.id)).run()
   return row
 }
 

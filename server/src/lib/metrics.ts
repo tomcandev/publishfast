@@ -1,6 +1,7 @@
+import { randomUUID } from 'node:crypto'
 import { eq } from 'drizzle-orm'
 import { db } from '../db/index.js'
-import { contents, publications, users } from '../db/schema.js'
+import { contents, metricSnapshots, publications, users } from '../db/schema.js'
 
 export interface MetricResult {
   views: number
@@ -283,17 +284,27 @@ export async function syncAllPublicationMetrics(): Promise<{
 
     const metrics = await fetchSocialMetrics(pub.publishedUrl, pub.platform)
 
+    const counts = {
+      views: metrics.views > 0 ? metrics.views : pub.views,
+      likes: metrics.likes > 0 ? metrics.likes : pub.likes,
+      comments: metrics.comments > 0 ? metrics.comments : pub.comments,
+      shares: metrics.shares > 0 ? metrics.shares : pub.shares,
+    }
     db.update(publications)
       .set({
-        views: metrics.views > 0 ? metrics.views : pub.views,
-        likes: metrics.likes > 0 ? metrics.likes : pub.likes,
-        comments: metrics.comments > 0 ? metrics.comments : pub.comments,
-        shares: metrics.shares > 0 ? metrics.shares : pub.shares,
+        ...counts,
         lastCheckedAt: nowIso,
         metricError: metrics.error,
       })
       .where(eq(publications.id, pub.id))
       .run()
+
+    // Keep the history too. A failed fetch changed no counts, so it adds no reading.
+    if (!metrics.error) {
+      db.insert(metricSnapshots)
+        .values({ id: randomUUID(), publicationId: pub.id, takenAt: nowIso, label: 'auto', ...counts })
+        .run()
+    }
 
     if (metrics.error) {
       errors++

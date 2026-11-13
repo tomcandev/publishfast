@@ -2,6 +2,25 @@ import { and, asc, eq, isNull, or, sql } from 'drizzle-orm'
 import { db, sqlite } from '../db/index.js'
 import { contents, type Content } from '../db/schema.js'
 
+/**
+ * READY items a user may take: those assigned to them, plus the open queue
+ * (unassigned items) unless the user is `assigned_only`. The one definition
+ * of "claimable", shared by the claim CAS, the queue, assets and reminders.
+ */
+export function claimableBy(userId: string, assignedOnly = false) {
+  return and(
+    eq(contents.status, 'READY'),
+    assignedOnly
+      ? eq(contents.assignedUserId, userId)
+      : or(isNull(contents.assignedUserId), eq(contents.assignedUserId, userId)),
+  )!
+}
+
+export type ClaimOptions = {
+  /** The user never sees the open queue (users.assigned_only). */
+  assignedOnly?: boolean
+}
+
 export type ClaimResult =
   | { ok: true; content: Content }
   | { ok: false; reason: 'not_found' | 'already_claimed' | 'empty_queue' }
@@ -18,7 +37,7 @@ export type ClaimResult =
  * express: filtered permissions are licence-gated there, so the lock had to
  * move into application code.
  */
-export function claimContent(contentId: string, userId: string): ClaimResult {
+export function claimContent(contentId: string, userId: string, opts: ClaimOptions = {}): ClaimResult {
   const now = new Date().toISOString()
 
   const result = db
@@ -27,9 +46,8 @@ export function claimContent(contentId: string, userId: string): ClaimResult {
     .where(
       and(
         eq(contents.id, contentId),
-        eq(contents.status, 'READY'),
-        // A pre-assigned item may only be claimed by its assignee.
-        or(isNull(contents.assignedUserId), eq(contents.assignedUserId, userId)),
+        // READY, and a pre-assigned item may only be claimed by its assignee.
+        claimableBy(userId, opts.assignedOnly),
       ),
     )
     .run()
@@ -40,6 +58,8 @@ export function claimContent(contentId: string, userId: string): ClaimResult {
 
   const existing = db.select().from(contents).where(eq(contents.id, contentId)).get()
   if (!existing) return { ok: false, reason: 'not_found' }
+  // An assigned-only user may not even know an item outside their assignments exists.
+  if (opts.assignedOnly && existing.assignedUserId !== userId) return { ok: false, reason: 'not_found' }
   return { ok: false, reason: 'already_claimed' }
 }
 
@@ -49,17 +69,13 @@ export function claimContent(contentId: string, userId: string): ClaimResult {
  * exactly what the retry loop absorbs. Each attempt is still atomic; we simply
  * pick the next candidate when we lose a race.
  */
-export function claimNext(userId: string, maxAttempts = 25): ClaimResult {
+export function claimNext(userId: string, opts: ClaimOptions & { maxAttempts?: number } = {}): ClaimResult {
+  const maxAttempts = opts.maxAttempts ?? 25
   for (let attempt = 0; attempt < maxAttempts; attempt++) {
     const candidate = db
       .select()
       .from(contents)
-      .where(
-        and(
-          eq(contents.status, 'READY'),
-          or(isNull(contents.assignedUserId), eq(contents.assignedUserId, userId)),
-        ),
-      )
+      .where(claimableBy(userId, opts.assignedOnly))
       // Items explicitly assigned to this user come first, then oldest first.
       .orderBy(sql`${contents.assignedUserId} is null`, asc(contents.createdAt))
       .limit(1)
@@ -67,7 +83,7 @@ export function claimNext(userId: string, maxAttempts = 25): ClaimResult {
 
     if (!candidate) return { ok: false, reason: 'empty_queue' }
 
-    const claimed = claimContent(candidate.id, userId)
+    const claimed = claimContent(candidate.id, userId, opts)
     if (claimed.ok) return claimed
     // Lost the race for this row — try the next candidate.
   }

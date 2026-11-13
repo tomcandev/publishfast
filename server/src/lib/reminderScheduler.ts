@@ -1,6 +1,7 @@
-import { and, eq, isNull, or, sql } from 'drizzle-orm'
+import { and, eq, sql } from 'drizzle-orm'
 import { db } from '../db/index.js'
 import { contents, pushSubscriptions, reminderSettings, users } from '../db/schema.js'
+import { claimableBy } from './claim.js'
 import { sendPushNotification } from './push.js'
 
 let intervalTimer: NodeJS.Timeout | null = null
@@ -80,15 +81,13 @@ export async function checkAndSendReminders() {
       .where(and(eq(contents.claimedBy, setting.userId), eq(contents.status, 'CLAIMED')))
       .get()
 
+    const assignedOnly =
+      db.select({ assignedOnly: users.assignedOnly }).from(users).where(eq(users.id, setting.userId)).get()
+        ?.assignedOnly ?? false
     const readyQueue = db
       .select({ count: sql<number>`count(*)` })
       .from(contents)
-      .where(
-        and(
-          eq(contents.status, 'READY'),
-          or(isNull(contents.assignedUserId), eq(contents.assignedUserId, setting.userId)),
-        ),
-      )
+      .where(claimableBy(setting.userId, assignedOnly))
       .get()
 
     const inProgressCount = activeTasks?.count ?? 0
