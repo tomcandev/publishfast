@@ -25,6 +25,9 @@ export const TOKEN_ROUTES: Record<string, { scopes: readonly NarrowScope[]; acti
   'GET /api/ingest/contents/:id': { scopes: ['ingest'] },
   'PATCH /api/ingest/contents/:id': { scopes: ['ingest'], action: 'ingest.patch' },
   'POST /api/ingest/contents/:id/assets': { scopes: ['ingest'], action: 'ingest.upload' },
+  'DELETE /api/ingest/contents/:id/assets/:assetId': { scopes: ['ingest'], action: 'ingest.asset.delete' },
+  'POST /api/ingest/contents/:id/withdraw': { scopes: ['ingest'], action: 'ingest.withdraw' },
+  'DELETE /api/ingest/contents/:id': { scopes: ['ingest'], action: 'ingest.delete' },
 
   // poster: the queue routes its user could call in a browser
   'GET /api/contents': { scopes: ['poster'] },

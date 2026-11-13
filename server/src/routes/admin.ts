@@ -9,6 +9,7 @@ import { createApiToken, createUser, hashPassword, publicUser } from '../lib/aut
 import { releaseStaleClaims } from '../lib/claim.js'
 import { config } from '../lib/config.js'
 import { requireAdmin } from '../lib/guards.js'
+import { withClaimInfo } from '../lib/holds.js'
 import { getHookPerformanceSummary, syncAllPublicationMetrics } from '../lib/metrics.js'
 
 const userSchema = z.object({
@@ -121,7 +122,7 @@ export async function adminRoutes(app: FastifyInstance) {
 
   /* ---------- contents ---------- */
 
-  app.get('/api/admin/contents', async () => {
+  app.get('/api/admin/contents', async (req) => {
     const rows = db.select().from(contents).orderBy(desc(contents.createdAt)).limit(500).all()
     if (rows.length === 0) return { contents: [] }
     const ids = rows.map((r) => r.id)
@@ -134,7 +135,7 @@ export async function adminRoutes(app: FastifyInstance) {
     const pubRows = db.select().from(publications).where(inArray(publications.contentId, ids)).all()
 
     return {
-      contents: rows.map((row) => ({
+      contents: withClaimInfo(req, rows).map((row) => ({
         ...row,
         assets: assetRows
           .filter((a) => a.contentId === row.id)
@@ -183,7 +184,7 @@ export async function adminRoutes(app: FastifyInstance) {
         .all()
         .map(({ filePath: _hidden, ...rest }) => rest)
       const pubRows = db.select().from(publications).where(eq(publications.contentId, id)).all()
-      return { content: { ...updated, assets: assetRows, publications: pubRows } }
+      return { content: { ...withClaimInfo(req, [updated])[0]!, assets: assetRows, publications: pubRows } }
     } catch (err) {
       const message = (err as Error).message
       const conflict = message.includes('UNIQUE') ? `Code "${body.data.code}" already exists` : message

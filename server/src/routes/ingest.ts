@@ -4,7 +4,7 @@ import { unlink } from 'node:fs/promises'
 import { extname, join } from 'node:path'
 import { pipeline } from 'node:stream/promises'
 import type { FastifyInstance, FastifyRequest } from 'fastify'
-import { and, asc, desc, eq, inArray, sql } from 'drizzle-orm'
+import { and, asc, desc, eq, inArray, isNull, sql } from 'drizzle-orm'
 import { z } from 'zod'
 import { db } from '../db/index.js'
 import { CONTENT_TYPES, assets, contents, users, type Content } from '../db/schema.js'
@@ -71,6 +71,31 @@ function withAssets(rows: Content[]) {
 }
 
 const ASSIGNEE_REQUIRED = 'This token must assign every item to one of its assignees'
+
+/** Names whose bytes are clearly not media, for uploads sent as application/octet-stream. */
+const NON_MEDIA_EXT = new Set(['.srt', '.vtt', '.ass', '.ssa', '.txt', '.json', '.csv', '.md', '.pdf', '.zip'])
+
+/**
+ * Asset type. video/* and image/* as always; any other declared type is a
+ * `file` (subtitles and the like). A generic application/octet-stream keeps
+ * the old fallback (`image`), which existing pipelines that upload without a
+ * type rely on, unless the name is plainly not media.
+ */
+function assetType(mime: string, filename: string): 'video' | 'image' | 'file' {
+  if (mime.startsWith('video/')) return 'video'
+  if (mime.startsWith('image/')) return 'image'
+  if (mime === 'application/octet-stream') {
+    return NON_MEDIA_EXT.has(extname(filename).toLowerCase()) ? 'file' : 'image'
+  }
+  return 'file'
+}
+
+async function unlinkUpload(filePath: string) {
+  const root = config.uploadsDir
+  const abs = join(root, filePath)
+  if (!abs.startsWith(root + '/')) return
+  await unlink(abs).catch(() => {})
+}
 
 export async function ingestRoutes(app: FastifyInstance) {
   app.addHook('preHandler', requireIngest)
@@ -267,7 +292,7 @@ export async function ingestRoutes(app: FastifyInstance) {
             mime,
             size: (await import('node:fs')).statSync(abs).size,
             sortOrder: nextOrder + index,
-            type: mime.startsWith('video/') ? 'video' : 'image',
+            type: assetType(mime, part.filename || ''),
           })
           .run()
         created.push(assetId)
@@ -293,5 +318,78 @@ export async function ingestRoutes(app: FastifyInstance) {
         .all()
         .map(({ filePath: _hidden, ...rest }) => rest),
     })
+  })
+
+  /**
+   * Take an item back to DRAFT so it can be made again: only when it is READY
+   * and nobody holds it, as one compare-and-swap. A pending timed release is
+   * cancelled too. 409 with the current status when it is claimed or done.
+   */
+  app.post('/api/ingest/contents/:id/withdraw', async (req, reply) => {
+    const { id } = req.params as { id: string }
+    const scoped = ingestScoped(req)
+    const existing = db.select().from(contents).where(eq(contents.id, id)).get()
+    if (!existing || (scoped && existing.createdByToken !== scoped.id)) {
+      return reply.code(404).send({ error: 'Not found' })
+    }
+    if (existing.status === 'DRAFT') return { content: withAssets([existing])[0] }
+
+    const result = db
+      .update(contents)
+      .set({ status: 'DRAFT', releaseAt: null })
+      .where(and(eq(contents.id, id), eq(contents.status, 'READY'), isNull(contents.claimedBy)))
+      .run()
+    const now = db.select().from(contents).where(eq(contents.id, id)).get()!
+    if (result.changes === 0 && now.status !== 'DRAFT') {
+      return reply.code(409).send({
+        error: `This item is ${now.status} and can no longer be withdrawn`,
+        reason: 'not_withdrawable',
+        status: now.status,
+      })
+    }
+    return { content: withAssets([now])[0] }
+  })
+
+  /** Delete one asset of an item still in DRAFT (its bytes too). */
+  app.delete('/api/ingest/contents/:id/assets/:assetId', async (req, reply) => {
+    const { id, assetId } = req.params as { id: string; assetId: string }
+    const scoped = ingestScoped(req)
+    const content = db.select().from(contents).where(eq(contents.id, id)).get()
+    if (!content || (scoped && content.createdByToken !== scoped.id)) {
+      return reply.code(404).send({ error: 'Not found' })
+    }
+    const asset = db
+      .select()
+      .from(assets)
+      .where(and(eq(assets.id, assetId), eq(assets.contentId, id)))
+      .get()
+    if (!asset) return reply.code(404).send({ error: 'Not found' })
+    if (content.status !== 'DRAFT') {
+      return reply.code(409).send({ error: 'This item is no longer a draft and cannot be changed', reason: 'not_draft' })
+    }
+    db.delete(assets).where(eq(assets.id, asset.id)).run()
+    await unlinkUpload(asset.filePath)
+    return { ok: true }
+  })
+
+  /** Delete an item still in DRAFT, with its files. */
+  app.delete('/api/ingest/contents/:id', async (req, reply) => {
+    const { id } = req.params as { id: string }
+    const scoped = ingestScoped(req)
+    const content = db.select().from(contents).where(eq(contents.id, id)).get()
+    if (!content || (scoped && content.createdByToken !== scoped.id)) {
+      return reply.code(404).send({ error: 'Not found' })
+    }
+    const assetRows = db.select({ filePath: assets.filePath }).from(assets).where(eq(assets.contentId, id)).all()
+    // Only a DRAFT, checked inside the DELETE (asset rows go with it by cascade).
+    const result = db
+      .delete(contents)
+      .where(and(eq(contents.id, id), eq(contents.status, 'DRAFT')))
+      .run()
+    if (result.changes === 0) {
+      return reply.code(409).send({ error: 'Only a draft can be deleted', reason: 'not_draft', status: content.status })
+    }
+    await Promise.all(assetRows.map((a) => unlinkUpload(a.filePath)))
+    return { ok: true }
   })
 }

@@ -5,6 +5,7 @@ import { z } from 'zod'
 import { db } from '../db/index.js'
 import { PLATFORMS, contents, publications } from '../db/schema.js'
 import { requireUser } from '../lib/guards.js'
+import { holdConflict, holdReply } from '../lib/holds.js'
 
 const upsertSchema = z.object({
   contentId: z.string().min(1),
@@ -47,6 +48,8 @@ export async function publicationRoutes(app: FastifyInstance) {
       .get()
 
     if (!owned) return reply.code(403).send({ error: 'You have not claimed this post' })
+    const held = holdConflict(req, owned, 'finish')
+    if (held) return reply.code(409).send(holdReply(held))
 
     const existing = db
       .select()
@@ -82,6 +85,9 @@ export async function publicationRoutes(app: FastifyInstance) {
     if (user.role !== 'admin' && row.userId !== user.id) {
       return reply.code(403).send({ error: 'Forbidden' })
     }
+    const parent = db.select().from(contents).where(eq(contents.id, row.contentId)).get()
+    const held = parent && holdConflict(req, parent, 'finish')
+    if (held) return reply.code(409).send(holdReply(held))
 
     db.delete(publications).where(eq(publications.id, id)).run()
     req.audit = { contentId: row.contentId, publicationId: id }

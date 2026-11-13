@@ -19,6 +19,8 @@ export function claimableBy(userId: string, assignedOnly = false) {
 export type ClaimOptions = {
   /** The user never sees the open queue (users.assigned_only). */
   assignedOnly?: boolean
+  /** The poster token making the claim; NULL/undefined for a session claim. */
+  tokenId?: string | null
 }
 
 export type ClaimResult =
@@ -42,7 +44,7 @@ export function claimContent(contentId: string, userId: string, opts: ClaimOptio
 
   const result = db
     .update(contents)
-    .set({ status: 'CLAIMED', claimedBy: userId, claimedAt: now })
+    .set({ status: 'CLAIMED', claimedBy: userId, claimedAt: now, claimedByToken: opts.tokenId ?? null })
     .where(
       and(
         eq(contents.id, contentId),
@@ -90,16 +92,21 @@ export function claimNext(userId: string, opts: ClaimOptions & { maxAttempts?: n
   return { ok: false, reason: 'empty_queue' }
 }
 
-/** Return a claimed item to the queue. Only the claimant (or an admin) may do this. */
-export function releaseContent(contentId: string, userId: string, isAdmin = false) {
+/**
+ * Return a claimed item to the queue. Only the claimant (or an admin) may do
+ * this. With `tokenId` (a poster token) the claim must also be held by that
+ * very token, checked inside the same UPDATE.
+ */
+export function releaseContent(contentId: string, userId: string, isAdmin = false, tokenId?: string | null) {
   const result = db
     .update(contents)
-    .set({ status: 'READY', claimedBy: null, claimedAt: null })
+    .set({ status: 'READY', claimedBy: null, claimedAt: null, claimedByToken: null })
     .where(
       and(
         eq(contents.id, contentId),
         eq(contents.status, 'CLAIMED'),
         ...(isAdmin ? [] : [eq(contents.claimedBy, userId)]),
+        ...(tokenId ? [eq(contents.claimedByToken, tokenId)] : []),
       ),
     )
     .run()
@@ -114,7 +121,7 @@ export function releaseStaleClaims(hours: number) {
   const cutoff = new Date(Date.now() - hours * 3_600_000).toISOString()
   return db
     .update(contents)
-    .set({ status: 'READY', claimedBy: null, claimedAt: null })
+    .set({ status: 'READY', claimedBy: null, claimedAt: null, claimedByToken: null })
     .where(and(eq(contents.status, 'CLAIMED'), sql`${contents.claimedAt} < ${cutoff}`))
     .run().changes
 }

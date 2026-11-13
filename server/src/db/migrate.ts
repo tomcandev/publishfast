@@ -18,6 +18,7 @@ const addedColumns: [table: string, column: string, ddl: string][] = [
   ['contents', 'meta', 'TEXT'],
   ['contents', 'source', 'TEXT'],
   ['contents', 'created_by_token', 'TEXT'],
+  ['contents', 'claimed_by_token', 'TEXT'],
   ['api_tokens', 'scope', 'TEXT'],
   ['api_tokens', 'user_id', 'TEXT'],
   ['api_tokens', 'assignees', 'TEXT'],
@@ -60,6 +61,7 @@ const statements = [
     meta TEXT,
     source TEXT,
     created_by_token TEXT,
+    claimed_by_token TEXT,
     created_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ','now'))
   )`,
   `CREATE UNIQUE INDEX IF NOT EXISTS contents_code_unique ON contents (code)`,

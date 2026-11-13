@@ -1,9 +1,10 @@
-import type { FastifyInstance } from 'fastify'
-import { and, asc, desc, eq, inArray, or, sql } from 'drizzle-orm'
+import type { FastifyInstance, FastifyRequest } from 'fastify'
+import { and, asc, desc, eq, inArray, isNull, or, sql } from 'drizzle-orm'
 import { db } from '../db/index.js'
 import { assets, contents, publications, users, type Content, type User } from '../db/schema.js'
 import { claimContent, claimNext, claimableBy, releaseContent } from '../lib/claim.js'
 import { requireUser } from '../lib/guards.js'
+import { holdConflict, holdReply, withClaimInfo } from '../lib/holds.js'
 
 /**
  * What a KOL is allowed to see: unclaimed work that is up for grabs, plus
@@ -24,7 +25,7 @@ function scopeFor(user: User) {
 }
 
 /** Attaches assets and publications to a set of contents in two queries. */
-function hydrate(rows: Content[]) {
+function hydrate(req: FastifyRequest, rows: Content[]) {
   if (rows.length === 0) return []
   const ids = rows.map((r) => r.id)
 
@@ -38,7 +39,8 @@ function hydrate(rows: Content[]) {
   const pubRows = db.select().from(publications).where(inArray(publications.contentId, ids)).all()
 
   // created_by_token is internal bookkeeping for ingest tokens; the queue never needs it.
-  return rows.map(({ createdByToken: _internal, ...row }) => ({
+  // withClaimInfo swaps claimed_by_token for claimedVia / claimedByTokenName.
+  return withClaimInfo(req, rows).map(({ createdByToken: _internal, ...row }) => ({
     ...row,
     assets: assetRows
       .filter((a) => a.contentId === row.id)
@@ -67,7 +69,7 @@ export async function contentRoutes(app: FastifyInstance) {
       .limit(200)
       .all()
 
-    return { contents: hydrate(rows) }
+    return { contents: hydrate(req, rows) }
   })
 
   /** Counters for the queue screen. */
@@ -107,36 +109,45 @@ export async function contentRoutes(app: FastifyInstance) {
 
     // 404 rather than 403 so a KOL can't probe which ids exist.
     if (!row) return reply.code(404).send({ error: 'Post not found' })
-    return { content: hydrate([row])[0] }
+    return { content: hydrate(req, [row])[0] }
   })
 
   /** Claim the next available item — the "Claim next post" button. */
   app.post('/api/contents/claim-next', async (req, reply) => {
     const user = req.user!
-    const result = claimNext(user.id, { assignedOnly: user.assignedOnly })
+    const tokenId = req.apiToken?.scope === 'poster' ? req.apiToken.id : null
+    const result = claimNext(user.id, { assignedOnly: user.assignedOnly, tokenId })
     if (!result.ok) {
       return reply.code(404).send({ error: 'No posts are currently ready', reason: result.reason })
     }
     req.audit = { contentId: result.content.id }
-    return { content: hydrate([result.content])[0] }
+    return { content: hydrate(req, [result.content])[0] }
   })
 
   app.post('/api/contents/:id/claim', async (req, reply) => {
     const { id } = req.params as { id: string }
-    const result = claimContent(id, req.user!.id, { assignedOnly: req.user!.assignedOnly })
+    const tokenId = req.apiToken?.scope === 'poster' ? req.apiToken.id : null
+    const result = claimContent(id, req.user!.id, { assignedOnly: req.user!.assignedOnly, tokenId })
     if (!result.ok) {
       const code = result.reason === 'not_found' ? 404 : 409
       const error =
         result.reason === 'not_found' ? 'Post not found' : 'This post was just claimed by someone else'
       return reply.code(code).send({ error, reason: result.reason })
     }
-    return { content: hydrate([result.content])[0] }
+    return { content: hydrate(req, [result.content])[0] }
   })
 
   app.post('/api/contents/:id/release', async (req, reply) => {
     const { id } = req.params as { id: string }
     const user = req.user!
-    const ok = releaseContent(id, user.id, user.role === 'admin')
+    const tokenId = req.apiToken?.scope === 'poster' ? req.apiToken.id : null
+    if (tokenId) {
+      const item = db.select().from(contents).where(eq(contents.id, id)).get()
+      const held = item && item.status === 'CLAIMED' && item.claimedBy === user.id && holdConflict(req, item, 'release')
+      if (held) return reply.code(409).send(holdReply(held))
+    }
+    // A session may always release its user's claim, also one an agent holds: that is "take over".
+    const ok = releaseContent(id, user.id, user.role === 'admin', tokenId)
     if (!ok) return reply.code(409).send({ error: 'Cannot return this post' })
     return { ok: true }
   })
@@ -154,6 +165,8 @@ export async function contentRoutes(app: FastifyInstance) {
 
     const existing = db.select().from(contents).where(owned).get()
     if (!existing) return reply.code(409).send({ error: 'This post is not in claimed status' })
+    const held = holdConflict(req, existing, 'finish')
+    if (held) return reply.code(409).send(holdReply(held))
 
     const pubCount = db
       .select({ n: sql<number>`count(*)` })
@@ -165,8 +178,19 @@ export async function contentRoutes(app: FastifyInstance) {
       return reply.code(400).send({ error: 'At least one published link is required before completing' })
     }
 
-    db.update(contents).set({ status: 'PUBLISHED' }).where(eq(contents.id, id)).run()
-    return { content: hydrate([db.select().from(contents).where(eq(contents.id, id)).get()!])[0] }
+    // Same predicate as the check above, plus the holder, so a release in between wins.
+    const done = db
+      .update(contents)
+      .set({ status: 'PUBLISHED' })
+      .where(
+        and(
+          owned,
+          existing.claimedByToken ? eq(contents.claimedByToken, existing.claimedByToken) : isNull(contents.claimedByToken),
+        ),
+      )
+      .run()
+    if (done.changes === 0) return reply.code(409).send({ error: 'This post is not in claimed status' })
+    return { content: hydrate(req, [db.select().from(contents).where(eq(contents.id, id)).get()!])[0] }
   })
 
   /** This KOL's published history. */
@@ -179,6 +203,6 @@ export async function contentRoutes(app: FastifyInstance) {
       .orderBy(desc(contents.claimedAt))
       .limit(100)
       .all()
-    return { contents: hydrate(rows) }
+    return { contents: hydrate(req, rows) }
   })
 }

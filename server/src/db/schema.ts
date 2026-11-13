@@ -65,6 +65,8 @@ export const contents = sqliteTable(
     source: text('source'),
     /** api_tokens.id of the token that created it. No FK: deleting a token must not touch content. */
     createdByToken: text('created_by_token'),
+    /** api_tokens.id of the poster token holding the claim; NULL for a claim made in a session. */
+    claimedByToken: text('claimed_by_token'),
     createdAt: text('created_at').notNull().default(now),
   },
   (t) => [
@@ -91,7 +93,8 @@ export const assets = sqliteTable(
     mime: text('mime').notNull(),
     size: integer('size').notNull(),
     sortOrder: integer('sort_order').notNull().default(0),
-    type: text('type', { enum: ['video', 'image'] }).notNull(),
+    /** `file` is anything that is neither video/* nor image/* (e.g. subtitles). */
+    type: text('type', { enum: ['video', 'image', 'file'] }).notNull(),
     createdAt: text('created_at').notNull().default(now),
   },
   (t) => [index('assets_content_sort_idx').on(t.contentId, t.sortOrder)],
