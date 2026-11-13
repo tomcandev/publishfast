@@ -284,6 +284,22 @@ export function Post() {
     }
   }
 
+  /** An agent holds this item: release it (allowed for the same user's session) and claim it here. */
+  async function takeOver() {
+    if (!content) return
+    if (!confirm('Take this post over from the agent? It will stop posting it.')) return
+    setBusy(true)
+    try {
+      await api.release(content.id)
+      const { content: mine } = await api.claim(content.id)
+      setContent(mine)
+    } catch (err) {
+      setError(err instanceof Error ? err.message : 'Failed to take over post')
+    } finally {
+      setBusy(false)
+    }
+  }
+
   async function release() {
     if (!content) return
     if (!confirm('Return this post back to the queue for someone else?')) return
@@ -358,6 +374,22 @@ export function Post() {
         </div>
         {content.title && <h1>{content.title}</h1>}
       </div>
+
+      {content.status === 'CLAIMED' && content.claimedVia === 'token' && (
+        <Alert kind="warn">
+          <div className="row-tight" style={{ justifyContent: 'space-between', flexWrap: 'wrap' }}>
+            <span>
+              Being posted by the agent <strong>{content.claimedByTokenName ?? 'unknown'}</strong>
+              {content.claimedAt ? ` since ${new Date(content.claimedAt).toLocaleString()}` : ''}.
+            </span>
+            <button className="btn btn-sm" disabled={busy} onClick={() => void takeOver()}>
+              Take over
+            </button>
+          </div>
+        </Alert>
+      )}
+
+      <PostingDetails content={content} />
 
       {error && <Snackbar message={error} kind="error" onClose={() => setError(null)} />}
 
@@ -725,6 +757,50 @@ export function Post() {
   )
 }
 
+/** Publish slot and YouTube details from the pipeline, each with a copy button. */
+function PostingDetails({ content }: { content: Content }) {
+  const yt = content.meta?.youtube
+  const tags = Array.isArray(yt?.tags) ? yt.tags.filter((t): t is string => typeof t === 'string') : []
+  if (!content.publishAt && !yt) return null
+  return (
+    <div className="card stack" style={{ gap: 10 }}>
+      {content.publishAt && (
+        <div className="row-tight">
+          <span className="hint">Publish at</span>
+          <strong>{new Date(content.publishAt).toLocaleString()}</strong>
+        </div>
+      )}
+      {yt?.title && (
+        <div className="stack" style={{ gap: 6 }}>
+          <div className="row-tight" style={{ justifyContent: 'space-between' }}>
+            <span className="hint">YouTube title</span>
+            <CopyButton text={yt.title} className="btn btn-sm" label="Copy" />
+          </div>
+          <div className="caption-box" style={{ margin: 0 }}>{yt.title}</div>
+        </div>
+      )}
+      {yt?.description && (
+        <div className="stack" style={{ gap: 6 }}>
+          <div className="row-tight" style={{ justifyContent: 'space-between' }}>
+            <span className="hint">YouTube description</span>
+            <CopyButton text={yt.description} className="btn btn-sm" label="Copy" />
+          </div>
+          <div className="caption-box" style={{ margin: 0 }}>{yt.description}</div>
+        </div>
+      )}
+      {tags.length > 0 && (
+        <div className="stack" style={{ gap: 6 }}>
+          <div className="row-tight" style={{ justifyContent: 'space-between' }}>
+            <span className="hint">YouTube tags</span>
+            <CopyButton text={tags.join(', ')} className="btn btn-sm" label="Copy" />
+          </div>
+          <div className="caption-box" style={{ margin: 0 }}>{tags.join(', ')}</div>
+        </div>
+      )}
+    </div>
+  )
+}
+
 function PlatformIcon({ platform }: { platform: Platform }) {
   switch (platform) {
     case 'tiktok':
@@ -732,6 +808,7 @@ function PlatformIcon({ platform }: { platform: Platform }) {
     case 'instagram':
       return <InstagramIcon />
     case 'youtube_shorts':
+    case 'youtube':
       return <YouTubeIcon />
     case 'facebook':
       return <FacebookIcon />

@@ -1,6 +1,6 @@
 export type Role = 'admin' | 'kol'
 export type ContentStatus = 'DRAFT' | 'READY' | 'CLAIMED' | 'PUBLISHED' | 'FAILED'
-export type Platform = 'tiktok' | 'instagram' | 'youtube_shorts' | 'facebook' | 'other'
+export type Platform = 'tiktok' | 'instagram' | 'youtube_shorts' | 'youtube' | 'facebook' | 'other'
 
 export interface User {
   id: string
@@ -11,6 +11,7 @@ export interface User {
   active: boolean
   notes?: string | null
   bioLink?: string | null
+  assignedOnly?: boolean
   createdAt: string
 }
 
@@ -21,7 +22,7 @@ export interface Asset {
   mime: string
   size: number
   sortOrder: number
-  type: 'video' | 'image'
+  type: 'video' | 'image' | 'file'
 }
 
 export interface Publication {
@@ -51,9 +52,23 @@ export interface Content {
   claimedBy: string | null
   claimedAt: string | null
   hookId?: string | null
+  /** When the post should go public on its platform. */
+  publishAt?: string | null
+  releaseAt?: string | null
+  /** Per-platform details from the pipeline, e.g. meta.youtube.title. */
+  meta?: ContentMeta | null
+  source?: string | null
+  /** Who holds the claim: an agent's token or a person's session. */
+  claimedVia?: 'token' | 'session' | null
+  claimedByTokenName?: string | null
   createdAt: string
   assets: Asset[]
   publications: Publication[]
+}
+
+export interface ContentMeta {
+  youtube?: { title?: string; description?: string; tags?: string[] }
+  [key: string]: unknown
 }
 
 export interface HookPerformanceItem {
@@ -148,6 +163,7 @@ export const PLATFORM_LABELS: Record<Platform, string> = {
   tiktok: 'TikTok',
   instagram: 'Instagram',
   youtube_shorts: 'YouTube Shorts',
+  youtube: 'YouTube',
   facebook: 'Facebook',
   other: 'Other',
 }
