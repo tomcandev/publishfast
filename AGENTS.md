@@ -169,6 +169,21 @@ Authorization: Bearer <TOKEN>
 Content-Type: multipart/form-data (field: file)
 ```
 
+## Hub for People and Agents
+
+PublishFast is the one place finished posts go through, for people who post by hand and for AI agents
+that post for Tom. Machines use scoped bearer tokens, made with the token CLI (`docs/api.md`), never in
+the web page:
+* `ingest` — creates and fills its own drafts (optionally only for listed assignees), reads drop-box files under its prefix.
+* `poster` — acts as exactly one kol user on the queue routes; claims it makes belong to the token.
+* `read` — analysis exports only. `files` — the temporary drop box under its key prefix. `admin` — everything, like an old token.
+* Old tokens (no scope) keep their exact behaviour.
+
+**Allow-list rule:** every route a narrow scope may call is listed in `server/src/lib/scopes.ts`, the
+only place that decides it; the auth hook refuses anything else with 403. A new route is closed to
+`ingest`, `poster`, `read` and `files` tokens until you add it there deliberately, and
+`server/src/test/scopes.test.ts` checks every registered route against that list.
+
 ## Engineering Rules for AI Collaborators
 
 * **Strict English Codebase Standard**: All code, features, variable names, functions, comments, UI text, labels, user-facing copy, error messages, docs, and git commit messages MUST be written strictly in English. Only direct conversational communication/replies with the user may be in Vietnamese.

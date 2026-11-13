@@ -1,6 +1,6 @@
 # Data model
 
-Five tables in one SQLite file. The schema is applied as idempotent DDL at
+Ten tables in one SQLite file. The schema is applied as idempotent DDL at
 startup ([`server/src/db/migrate.ts`](../server/src/db/migrate.ts)) — there is no
 migration CLI to install or codegen step to run.
 
@@ -8,8 +8,14 @@ migration CLI to install or codegen step to run.
 users ──< contents ──< assets
               │
               └──< publications >── users
-api_tokens (standalone, for machine access)
+              publications ──< metric_snapshots
+api_tokens (machine access) ──< token_events (audit; no FK, outlives the token)
+files (drop box; standalone)
 ```
+
+Columns added after a table first shipped are listed in `addedColumns` in `migrate.ts` and added
+with `ALTER TABLE` only when missing; all are nullable or defaulted, so the migration is additive and
+safe on an existing database.
 
 ## users
 
@@ -21,7 +27,9 @@ api_tokens (standalone, for machine access)
 | `password_hash` | argon2id |
 | `display_name` | shown in the UI |
 | `role` | `admin` or `kol` |
-| `active` | inactive users cannot sign in |
+| `active` | inactive users cannot sign in (and their poster tokens stop working) |
+| `notes`, `bio_link` | admin notes; affiliate link |
+| `assigned_only` | default `0`. When `1` the user only ever sees content assigned to them, never the open queue |
 
 Login accepts a username *or* an email in the same field. Because usernames are
 forbidden from containing `@`, the two namespaces can never collide, so one
@@ -40,10 +48,18 @@ One row per piece of content to be posted.
 | `status` | see the flow below |
 | `assigned_user_id` | optional pre-assignment — only this user may claim it |
 | `claimed_by`, `claimed_at` | set atomically on claim |
+| `claimed_by_token` | the poster token that made the claim; `NULL` for a session claim; cleared on release |
+| `hook_id` | marketing hook id |
+| `release_at` | ISO UTC. A `DRAFT` with `release_at` is flipped to `READY` by the server when the time comes |
+| `publish_at` | ISO UTC. When the post should go public on its platform (shown to the poster) |
+| `meta` | JSON object ≤ 64 KB, free-form per platform (`meta.youtube.title`, …) |
+| `source` | ≤ 200 chars, where it came from (`nhi#12`) |
+| `created_by_token` | the token that created it; an `ingest`-scope token only sees its own items |
 
 ## assets
 
-Media attached to a content item, ordered by `sort_order`. `file_path` is
+Media attached to a content item, ordered by `sort_order`. `type` is `video`, `image`, or `file`
+(anything else, e.g. subtitles). `file_path` is
 relative to the uploads directory and is **never** sent to the client — media is
 served through `/api/assets/:id`, which re-checks permissions on every request.
 
@@ -56,10 +72,42 @@ updates the existing row rather than creating a duplicate.
 This is what supports the core requirement: one KOL takes one content item and
 posts it to several platforms, pasting a separate link back for each.
 
+## metric_snapshots
+
+One row per metric reading of a publication: `publication_id` (cascade), `taken_at`, `label`
+(`24h`, `7d`, `28d`, `daily`, `auto`), nullable `views`, `likes`, `comments`, `shares`, `extra`
+(JSON ≤ 16 KB), `created_at`, `token_id` (the token that wrote it, no FK). A reading at least as new
+as the publication's `last_checked_at` also becomes its latest counts.
+
 ## api_tokens
 
-Bearer tokens for the AI ingestion pipeline. Only a SHA-256 hash is stored; the
-plaintext is shown once at creation and is not recoverable.
+Bearer tokens for machines. Only a SHA-256 hash is stored; the plaintext is shown once at creation
+and is not recoverable.
+
+| column | notes |
+|---|---|
+| `role` | `admin` or `kol`; decides what an old (unscoped) token may do |
+| `scope` | `NULL` (old token, behaves by `role` exactly as before), `admin`, `ingest`, `poster`, `read`, `files` |
+| `user_id` | `poster` tokens act as this user (no FK; a missing or inactive user makes the token fail) |
+| `assignees` | JSON array of user ids; `ingest` tokens must assign every item to one of them |
+| `file_prefix` | drop-box key prefix (`files`, `ingest`); `NULL` = no file at all |
+| `expires_at`, `revoked_at` | checked on every request; a refused token looks unknown |
+| `created_by` | `cli` or the id of the admin who made it in the web page |
+| `last_used_at` | updated on each accepted use |
+
+## token_events
+
+Audit trail: one row per successful state-changing call made with a token (`id, token_id, at,
+action, content_id, publication_id, ip`). Actions: `ingest.create`, `ingest.patch`, `ingest.upload`,
+`ingest.withdraw`, `ingest.delete`, `ingest.asset.delete`, `claim`, `release`, `complete`,
+`publication.create`, `publication.delete`, `metrics`, `file.put`, `file.delete`; any other route as
+`METHOD /pattern`. Written by one hook in `app.ts`.
+
+## files
+
+The drop box: `id, key` (unique), `stored_path` (random name under `DATA_DIR/files`, never the key, never
+sent to clients), `size, sha256, mime, created_at, expires_at, created_by_token`. Expired rows and their
+bytes are deleted by the scheduler.
 
 ## Status flow
 
@@ -69,7 +117,9 @@ DRAFT ──▶ READY ──▶ CLAIMED ──▶ PUBLISHED
                         └──▶ (released) ──▶ READY
 ```
 
-- `DRAFT` — created but not visible to KOLs yet
+- `DRAFT` — created but not visible to KOLs yet. With `release_at`, the release scheduler (every
+  60 s, one compare-and-swap `UPDATE … WHERE status='DRAFT' AND release_at <= now`) moves it to `READY`.
+  An ingest token's `withdraw` moves a `READY`, unclaimed item back to `DRAFT`.
 - `READY` — in the queue, claimable
 - `CLAIMED` — a KOL is holding it; only they can see and act on it
 - `PUBLISHED` — completed, with at least one published link recorded
@@ -115,7 +165,8 @@ workers racing for one item and 30 workers against 12 items.
 
 Enforced in route handlers, not configuration:
 
-- A **KOL** can read items that are `READY` and unassigned (or assigned to them), plus anything they claimed. Nothing else.
+- A **KOL** can read items that are `READY` and unassigned (or assigned to them), plus anything they claimed. Nothing else. An `assigned_only` KOL never sees unassigned items.
+- A **poster token** is its user, with these rules on top: it may not finish or release a claim its user made in a session, and a session may only release (take over) a claim a token holds.
 - A KOL can only record links against an item they currently hold.
 - Media inherits the same rule — an asset is only downloadable by someone allowed to see its content item.
 - Unknown or forbidden items return `404`, not `403`, so ids can't be probed.

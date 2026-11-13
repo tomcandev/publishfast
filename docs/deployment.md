@@ -21,7 +21,8 @@ object storage, no containers.
   .env                    # secrets, chmod 600
 ```
 
-Everything worth backing up lives in `data/`. The rest is reproducible from git.
+Everything worth backing up lives in `data/` (database, `uploads/`, and the
+temporary drop box `files/`). The rest is reproducible from git.
 
 ## Install
 
@@ -116,6 +117,53 @@ sudo systemctl restart publishfast
 Schema changes apply automatically at boot. `data/` is never touched by a
 deploy.
 
+### Upgrading to scoped tokens (agent API)
+
+The schema change is additive (new nullable or defaulted columns, new tables
+`metric_snapshots`, `token_events`, `files`); existing tokens and sessions keep
+working unchanged. Back up first, then run the migration explicitly so you see
+it succeed before the restart:
+
+```bash
+cd ~/projects/publishfast
+tar -czf ~/backups/publishfast-pre-scopes-$(date +%F-%H%M).tar.gz -C ~/projects/publishfast data
+git pull
+npm install
+npm run build
+node server/dist/db/migrate.js            # prints "Schema up to date."
+sudo systemctl restart publishfast
+curl -s http://127.0.0.1:8055/api/health   # {"ok":true}
+```
+
+The server process now also runs the **release scheduler**: every 60 seconds it
+moves `DRAFT` items whose `release_at` has passed to `READY` (one
+compare-and-swap UPDATE, logged as "Release scheduler: released N draft(s)")
+and deletes expired drop-box files. It never touches drafts without
+`release_at`.
+
+## Tokens
+
+Scoped tokens are made on the server with the CLI (see `docs/api.md`). Use the
+compiled entry so no dev tooling is needed, and send stdout straight to where
+the token belongs; it is printed nowhere else:
+
+```bash
+cd ~/projects/publishfast
+node server/dist/scripts/token.js create --name maker-nhi --scope ingest \
+    --assignees yt-pte,yt-vichat --file-prefix nhi/ > ~/maker-nhi.token
+node server/dist/scripts/token.js create --name air-pte --scope poster --user yt-pte > ~/air-pte.token
+node server/dist/scripts/token.js create --name weekly-read --scope read --expires 90 > ~/weekly.token
+node server/dist/scripts/token.js create --name vps-voice --scope files --file-prefix nhi/ > ~/vps-voice.token
+node server/dist/scripts/token.js user set --username yt-pte --assigned-only true
+node server/dist/scripts/token.js list
+node server/dist/scripts/token.js list --events air-pte
+node server/dist/scripts/token.js rotate --name air-pte > ~/air-pte.token
+node server/dist/scripts/token.js revoke --name weekly-read
+```
+
+`DATA_DIR` is read from `.env`, as for the server. Move each token file to its
+machine over a secure channel and delete it here.
+
 ## Configuration
 
 | variable | default | notes |
@@ -126,6 +174,7 @@ deploy.
 | `DATA_DIR` | `./data` | database and uploads |
 | `PUBLIC_URL` | `http://localhost:8055` | used for absolute links |
 | `MAX_UPLOAD_BYTES` | `536870912` (512 MB) | per file |
+| `MAX_FILE_BYTES` | `209715200` (200 MB) | per drop-box file (`PUT /api/files/<key>`) |
 
 ## Troubleshooting
 
