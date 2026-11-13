@@ -430,6 +430,15 @@ describe('poster scope', () => {
     assert.equal(done.json().content.status, 'PUBLISHED')
   })
 
+  it('admins set assigned_only with PATCH /api/admin/users/:id', async () => {
+    const adminCookie = await sessionFor(makeUser('ao-admin', 'admin').id)
+    const carol = makeUser('carol')
+    const res = await call(app, 'PATCH', `/api/admin/users/${carol.id}`, { cookie: adminCookie }, { assignedOnly: true })
+    assert.equal(res.statusCode, 200)
+    assert.equal(res.json().user.assignedOnly, true)
+    assert.equal((await call(app, 'PATCH', `/api/admin/users/${carol.id}`, { cookie: adminCookie }, { assignedOnly: 'yes' })).statusCode, 400)
+  })
+
   it('a poster token bound to an admin user still acts with kol power only', async () => {
     const boss = makeUser('boss', 'admin')
     const token = createApiToken('boss-poster', 'kol', { scope: 'poster', userId: boss.id })
