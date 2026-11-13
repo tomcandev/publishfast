@@ -15,6 +15,7 @@ const statements = [
     role TEXT NOT NULL DEFAULT 'kol',
     active INTEGER NOT NULL DEFAULT 1,
     notes TEXT,
+    bio_link TEXT,
     created_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ','now'))
   )`,
   `CREATE UNIQUE INDEX IF NOT EXISTS users_username_unique ON users (username)`,
@@ -116,6 +117,11 @@ export function migrate() {
     const userCols = sqlite.pragma('table_info(users)') as { name: string }[]
     if (!userCols.some((c) => c.name === 'notes')) {
       sqlite.exec('ALTER TABLE users ADD COLUMN notes TEXT')
+    }
+    // bio_link was added to schema.ts without a migration step; a fresh
+    // database could not create or sign in users until it existed.
+    if (!userCols.some((c) => c.name === 'bio_link')) {
+      sqlite.exec('ALTER TABLE users ADD COLUMN bio_link TEXT')
     }
 
     const contentCols = sqlite.pragma('table_info(contents)') as { name: string }[]
