@@ -22,7 +22,11 @@ export const config = {
   dataDir,
   dbPath: join(dataDir, 'publishfast.db'),
   uploadsDir: join(dataDir, 'uploads'),
+  /** Drop box bytes (routes/files.ts), kept apart from content uploads. */
+  filesDir: join(dataDir, 'files'),
   maxUploadBytes: Number(process.env.MAX_UPLOAD_BYTES ?? 536_870_912),
+  /** Per drop-box file. */
+  maxFileBytes: Number(process.env.MAX_FILE_BYTES ?? 209_715_200),
   isProd: process.env.NODE_ENV === 'production',
   /**
    * In development we fall back to a fixed secret so `npm run dev` works with
@@ -40,7 +44,7 @@ export const config = {
 }
 
 export function ensureDataDirs() {
-  for (const dir of [config.dataDir, config.uploadsDir]) {
+  for (const dir of [config.dataDir, config.uploadsDir, config.filesDir]) {
     if (!existsSync(dir)) mkdirSync(dir, { recursive: true })
   }
 }

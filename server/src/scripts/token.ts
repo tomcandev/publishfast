@@ -1,8 +1,8 @@
 /**
  * API token and account CLI. Tokens are made here, not in the web page.
  *
- *   npm run -s token -w server -- create --name <n> --scope <admin|ingest|poster|read>
- *       [--user <username>] [--assignees <u1,u2>] [--expires <days>]
+ *   npm run -s token -w server -- create --name <n> --scope <admin|ingest|poster|read|files>
+ *       [--user <username>] [--assignees <u1,u2>] [--file-prefix <p>] [--expires <days>]
  *   npm run -s token -w server -- list [--events <name>]
  *   npm run -s token -w server -- revoke --name <n>
  *   npm run -s token -w server -- rotate --name <n>
@@ -21,6 +21,7 @@ import { db } from '../db/index.js'
 import { migrate } from '../db/migrate.js'
 import { TOKEN_SCOPES, apiTokens, contents, tokenEvents, users, type ApiToken, type TokenScope } from '../db/schema.js'
 import { createApiToken, type TokenSettings } from '../lib/auth.js'
+import { isValidFilePrefix } from '../lib/files.js'
 
 class CliError extends Error {}
 
@@ -58,6 +59,7 @@ function describe(name: string, s: TokenSettings & { role: string }) {
   const parts = [`scope ${s.scope ?? `legacy ${s.role}`}`]
   if (s.userId) parts.push(`user ${db.select().from(users).where(eq(users.id, s.userId)).get()?.username}`)
   if (s.assignees?.length) parts.push(`assignees ${usernames(s.assignees)}`)
+  if (s.filePrefix) parts.push(`file prefix ${s.filePrefix}`)
   parts.push(s.expiresAt ? `expires ${s.expiresAt}` : 'no expiry')
   return `"${name}" (${parts.join(', ')})`
 }
@@ -74,6 +76,7 @@ export function createToken(opts: {
   user?: string
   assignees?: string
   expires?: string
+  'file-prefix'?: string
 }) {
   const name = opts.name?.trim()
   if (!name || name.length > 120) throw new CliError('--name is required (1-120 characters)')
@@ -83,6 +86,17 @@ export function createToken(opts: {
   const scope = opts.scope as TokenScope
   if (opts.user !== undefined && scope !== 'poster') throw new CliError('--user is only for --scope poster')
   if (opts.assignees !== undefined && scope !== 'ingest') throw new CliError('--assignees is only for --scope ingest')
+
+  let filePrefix: string | null = null
+  const rawPrefix = opts['file-prefix']
+  if (rawPrefix !== undefined) {
+    if (scope !== 'files' && scope !== 'ingest') throw new CliError('--file-prefix is only for --scope files or ingest')
+    if (!isValidFilePrefix(rawPrefix)) throw new CliError('--file-prefix must be key characters (A-Z a-z 0-9 . _ - /), no dot segments')
+    filePrefix = rawPrefix
+    if (!rawPrefix.endsWith('/')) err(`Warning: prefix "${rawPrefix}" has no trailing slash, so it also matches "${rawPrefix}x/..."`)
+  } else if (scope === 'files') {
+    throw new CliError('--file-prefix is required for --scope files')
+  }
 
   let userId: string | null = null
   if (scope === 'poster') {
@@ -109,7 +123,7 @@ export function createToken(opts: {
 
   if (activeByName(name).length > 0) throw new CliError(`An active token named "${name}" already exists`)
 
-  const settings = { scope, userId, assignees, expiresAt, createdBy: 'cli' }
+  const settings = { scope, userId, assignees, expiresAt, createdBy: 'cli', filePrefix }
   const role = scope === 'admin' ? 'admin' : 'kol'
   const token = createApiToken(name, role, settings)
   err(`Created token ${describe(name, { ...settings, role })}.`)
@@ -144,6 +158,7 @@ export function rotateToken(name: string | undefined) {
     assignees: old.assignees ?? null,
     expiresAt,
     createdBy: 'cli',
+    filePrefix: old.filePrefix ?? null,
   }
   let token = ''
   db.transaction(() => {
@@ -172,6 +187,7 @@ export function listTokens() {
       scope: apiTokens.scope,
       userId: apiTokens.userId,
       assignees: apiTokens.assignees,
+      filePrefix: apiTokens.filePrefix,
       createdAt: apiTokens.createdAt,
       lastUsedAt: apiTokens.lastUsedAt,
       expiresAt: apiTokens.expiresAt,
@@ -186,6 +202,7 @@ export function listTokens() {
       scope: t.scope ?? `legacy-${t.role}`,
       user: t.userId ? usernames([t.userId]) : '-',
       assignees: t.assignees?.length ? usernames(t.assignees) : '-',
+      file_prefix: t.filePrefix ?? '-',
       created: t.createdAt.slice(0, 16),
       last_used: t.lastUsedAt?.slice(0, 16) ?? '-',
       expires: t.expiresAt?.slice(0, 16) ?? '-',
@@ -235,7 +252,7 @@ export function setUser(opts: { username?: string; 'assigned-only'?: string }) {
 }
 
 const USAGE = `Usage:
-  token create --name <name> --scope <${TOKEN_SCOPES.join('|')}> [--user <username>] [--assignees <u1,u2>] [--expires <days>]
+  token create --name <name> --scope <${TOKEN_SCOPES.join('|')}> [--user <username>] [--assignees <u1,u2>] [--file-prefix <p>] [--expires <days>]
   token list [--events <name>]
   token revoke --name <name>
   token rotate --name <name>
@@ -251,6 +268,7 @@ export function main(argv: string[]) {
       user: { type: 'string' },
       assignees: { type: 'string' },
       expires: { type: 'string' },
+      'file-prefix': { type: 'string' },
       events: { type: 'string' },
       username: { type: 'string' },
       'assigned-only': { type: 'string' },

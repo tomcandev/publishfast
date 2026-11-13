@@ -82,6 +82,27 @@ describe('token CLI', () => {
     assert.deepEqual(row.assignees, [ytPte.id, ytVichat.id])
   })
 
+  it('files tokens need --file-prefix; ingest may have one; list shows it', async () => {
+    const f = await cli('create', '--name', 'vps-worker', '--scope', 'files', '--file-prefix', 'nhi/')
+    assert.equal(f.code, 0, f.stderr)
+    assert.match(f.stdout, /^pf_[0-9a-f]{48}\n$/)
+    const i = await cli('create', '--name', 'maker-files', '--scope', 'ingest', '--file-prefix', 'nhi/')
+    assert.equal(i.code, 0, i.stderr)
+    assert.equal(db.select().from(apiTokens).where(eq(apiTokens.name, 'maker-files')).get()!.filePrefix, 'nhi/')
+    for (const args of [
+      ['create', '--name', 'f2', '--scope', 'files'],
+      ['create', '--name', 'f3', '--scope', 'read', '--file-prefix', 'nhi/'],
+      ['create', '--name', 'f4', '--scope', 'files', '--file-prefix', 'nhi/../x/'],
+      ['create', '--name', 'f5', '--scope', 'files', '--file-prefix', '.hidden/'],
+    ]) {
+      const res = await cli(...args)
+      assert.equal(res.code, 1, args.join(' '))
+      assert.equal(res.stdout, '')
+    }
+    const list = await cli('list')
+    assert.match(list.stdout, /vps-worker\s+files\s+-\s+-\s+nhi\//)
+  })
+
   it('refuses bad combinations and a duplicate active name, printing nothing on stdout', async () => {
     for (const args of [
       ['create', '--name', 'weekly', '--scope', 'read'], // duplicate active name

@@ -24,6 +24,7 @@ const addedColumns: [table: string, column: string, ddl: string][] = [
   ['api_tokens', 'expires_at', 'TEXT'],
   ['api_tokens', 'revoked_at', 'TEXT'],
   ['api_tokens', 'created_by', 'TEXT'],
+  ['api_tokens', 'file_prefix', 'TEXT'],
 ]
 
 const statements = [
@@ -113,7 +114,8 @@ const statements = [
     assignees TEXT,
     expires_at TEXT,
     revoked_at TEXT,
-    created_by TEXT
+    created_by TEXT,
+    file_prefix TEXT
   )`,
   `CREATE UNIQUE INDEX IF NOT EXISTS api_tokens_hash_unique ON api_tokens (token_hash)`,
   `CREATE INDEX IF NOT EXISTS api_tokens_name_idx ON api_tokens (name)`,
@@ -143,6 +145,20 @@ const statements = [
     ip TEXT
   )`,
   `CREATE INDEX IF NOT EXISTS token_events_token_at_idx ON token_events (token_id, at)`,
+
+  `CREATE TABLE IF NOT EXISTS files (
+    id TEXT PRIMARY KEY,
+    key TEXT NOT NULL,
+    stored_path TEXT NOT NULL,
+    size INTEGER NOT NULL,
+    sha256 TEXT NOT NULL,
+    mime TEXT NOT NULL,
+    created_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ','now')),
+    expires_at TEXT NOT NULL,
+    created_by_token TEXT
+  )`,
+  `CREATE UNIQUE INDEX IF NOT EXISTS files_key_unique ON files (key)`,
+  `CREATE INDEX IF NOT EXISTS files_expires_idx ON files (expires_at)`,
 
   `CREATE TABLE IF NOT EXISTS reminder_settings (
     user_id TEXT PRIMARY KEY REFERENCES users(id) ON DELETE CASCADE,

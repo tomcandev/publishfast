@@ -59,12 +59,13 @@ describe('the scope allow-list covers every registered route', () => {
     }
   })
 
-  for (const scope of ['ingest', 'poster', 'read'] as NarrowScope[]) {
+  for (const scope of ['ingest', 'poster', 'read', 'files'] as NarrowScope[]) {
     it(`${scope}: 403 on every route outside its allow-list, never refused on its own`, async () => {
       const kol = makeUser(`${scope}-u`)
       const token = createApiToken(`${scope}-all`, 'kol', {
         scope,
         userId: scope === 'poster' ? kol.id : null,
+        filePrefix: scope === 'files' || scope === 'ingest' ? 'test/' : null,
       })
       let refused = 0
       for (const r of routes) {
@@ -94,6 +95,7 @@ describe('the scope allow-list covers every registered route', () => {
       ingest: createApiToken('x-ingest', 'kol', { scope: 'ingest' }),
       poster: createApiToken('x-poster', 'kol', { scope: 'poster', userId: kol.id }),
       read: createApiToken('x-read', 'kol', { scope: 'read' }),
+      files: createApiToken('x-files', 'kol', { scope: 'files', filePrefix: 'test/' }),
     }
     const probes: [string, string][] = [
       ['GET', '/api/admin/users'],
@@ -110,11 +112,12 @@ describe('the scope allow-list covers every registered route', () => {
       ['GET', '/api/history'],
     ]
     const others: Record<NarrowScope, [string, string][]> = {
-      ingest: [['GET', '/api/contents'], ['POST', '/api/contents/claim-next'], ['GET', '/api/export/publications']],
-      poster: [['POST', '/api/ingest/contents'], ['GET', '/api/ingest/contents'], ['GET', '/api/export/metrics']],
-      read: [['GET', '/api/contents'], ['POST', '/api/ingest/contents'], ['POST', `/api/publications/${randomUUID()}/metrics`]],
+      ingest: [['GET', '/api/contents'], ['POST', '/api/contents/claim-next'], ['GET', '/api/export/publications'], ['PUT', '/api/files/test/x'], ['DELETE', '/api/files/test/x'], ['GET', '/api/files']],
+      poster: [['POST', '/api/ingest/contents'], ['GET', '/api/ingest/contents'], ['GET', '/api/export/metrics'], ['GET', '/api/files/test/x']],
+      read: [['GET', '/api/contents'], ['POST', '/api/ingest/contents'], ['POST', `/api/publications/${randomUUID()}/metrics`], ['GET', '/api/files/test/x']],
+      files: [['GET', '/api/contents'], ['POST', '/api/ingest/contents'], ['GET', '/api/ingest/contents'], ['GET', '/api/export/metrics']],
     }
-    for (const scope of ['ingest', 'poster', 'read'] as NarrowScope[]) {
+    for (const scope of ['ingest', 'poster', 'read', 'files'] as NarrowScope[]) {
       for (const [method, url] of [...probes, ...others[scope]]) {
         const res = await call(app, method as 'GET', url, { token: tokens[scope] }, method === 'GET' ? undefined : {})
         assert.equal(res.statusCode, 403, `${scope} ${method} ${url}`)

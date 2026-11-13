@@ -9,7 +9,7 @@ export const ROLES = ['admin', 'kol'] as const
  * What an API token may do. A row with a NULL scope is a token created before
  * scopes existed and keeps its role-based behaviour (see lib/scopes.ts).
  */
-export const TOKEN_SCOPES = ['admin', 'ingest', 'poster', 'read'] as const
+export const TOKEN_SCOPES = ['admin', 'ingest', 'poster', 'read', 'files'] as const
 export type TokenScope = (typeof TOKEN_SCOPES)[number]
 
 const now = sql`(strftime('%Y-%m-%dT%H:%M:%fZ','now'))`
@@ -150,6 +150,8 @@ export const apiTokens = sqliteTable(
     revokedAt: text('revoked_at'),
     /** "cli" or the id of the admin who created it in the web page. */
     createdBy: text('created_by'),
+    /** Drop box: the key prefix this token may touch (files, ingest). NULL = no file at all. */
+    filePrefix: text('file_prefix'),
   },
   (t) => [uniqueIndex('api_tokens_hash_unique').on(t.tokenHash), index('api_tokens_name_idx').on(t.name)],
 )
@@ -176,6 +178,30 @@ export const metricSnapshots = sqliteTable(
     tokenId: text('token_id'),
   },
   (t) => [index('metric_snapshots_pub_taken_idx').on(t.publicationId, t.takenAt)],
+)
+
+/**
+ * Drop box for temporary hand-over files (e.g. narration made on the VPS for a
+ * cloud session). Bytes live under DATA_DIR/files under a random stored name,
+ * never the key. Rows and bytes are deleted when they expire.
+ */
+export const files = sqliteTable(
+  'files',
+  {
+    id: text('id').primaryKey(),
+    /** Slash-separated path, 1-200 chars, segments [A-Za-z0-9._-]+ not starting with a dot. */
+    key: text('key').notNull(),
+    /** Relative to the files directory. Never sent to clients. */
+    storedPath: text('stored_path').notNull(),
+    size: integer('size').notNull(),
+    sha256: text('sha256').notNull(),
+    mime: text('mime').notNull(),
+    createdAt: text('created_at').notNull().default(now),
+    expiresAt: text('expires_at').notNull(),
+    /** No FK, like contents.created_by_token. */
+    createdByToken: text('created_by_token'),
+  },
+  (t) => [uniqueIndex('files_key_unique').on(t.key), index('files_expires_idx').on(t.expiresAt)],
 )
 
 /** Audit trail: one row per state-changing call made with an API token. */
@@ -234,6 +260,7 @@ export type Publication = typeof publications.$inferSelect
 export type ApiToken = typeof apiTokens.$inferSelect
 export type MetricSnapshot = typeof metricSnapshots.$inferSelect
 export type TokenEvent = typeof tokenEvents.$inferSelect
+export type StoredFile = typeof files.$inferSelect
 export type ReminderSettings = typeof reminderSettings.$inferSelect
 export type PushSubscriptionRow = typeof pushSubscriptions.$inferSelect
 

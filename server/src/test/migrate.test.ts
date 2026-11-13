@@ -85,11 +85,12 @@ describe('migrate() on a database from main@0c7a5bd', () => {
     for (const c of ['release_at', 'publish_at', 'meta', 'source', 'created_by_token']) {
       assert.ok(columns('contents').includes(c), c)
     }
-    for (const c of ['scope', 'user_id', 'assignees', 'expires_at', 'revoked_at', 'created_by']) {
+    for (const c of ['scope', 'user_id', 'assignees', 'expires_at', 'revoked_at', 'created_by', 'file_prefix']) {
       assert.ok(columns('api_tokens').includes(c), c)
     }
     assert.ok(columns('metric_snapshots').includes('extra'))
     assert.ok(columns('token_events').includes('action'))
+    assert.ok(columns('files').includes('stored_path'))
   })
 
   it('keeps every old row and value; new columns are NULL or their default', () => {

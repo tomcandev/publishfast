@@ -41,6 +41,12 @@ export const TOKEN_ROUTES: Record<string, { scopes: readonly NarrowScope[]; acti
   'POST /api/publications/:id/metrics': { scopes: ['poster'], action: 'metrics' },
   'GET /api/publications/:id/metrics': { scopes: ['poster'] },
 
+  // files: the drop box, inside the token's file_prefix (routes/files.ts). ingest may only read.
+  'PUT /api/files/*': { scopes: ['files'], action: 'file.put' },
+  'GET /api/files/*': { scopes: ['files', 'ingest'] }, // HEAD maps here too
+  'DELETE /api/files/*': { scopes: ['files'], action: 'file.delete' },
+  'GET /api/files': { scopes: ['files'] },
+
   // read: analysis exports only
   'GET /api/export/publications': { scopes: ['read'] },
   'GET /api/export/metrics': { scopes: ['read'] },

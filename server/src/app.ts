@@ -12,6 +12,7 @@ import { assetRoutes } from './routes/assets.js'
 import { authRoutes } from './routes/auth.js'
 import { contentRoutes } from './routes/contents.js'
 import { exportRoutes } from './routes/export.js'
+import { fileRoutes } from './routes/files.js'
 import { ingestRoutes } from './routes/ingest.js'
 import { notificationRoutes } from './routes/notifications.js'
 import { publicationMetricRoutes } from './routes/publicationMetrics.js'
@@ -56,6 +57,7 @@ export async function buildApp(
   await app.register(notificationRoutes)
   await app.register(publicationMetricRoutes)
   await app.register(exportRoutes)
+  await app.register(fileRoutes)
 
   app.get('/api/health', async () => ({ ok: true }))
 

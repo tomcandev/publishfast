@@ -1,6 +1,7 @@
 import { and, eq, isNotNull, lte } from 'drizzle-orm'
 import { db } from '../db/index.js'
 import { contents } from '../db/schema.js'
+import { sweepExpiredFiles } from './files.js'
 
 let intervalTimer: NodeJS.Timeout | null = null
 
@@ -24,20 +25,27 @@ export function releaseDueDrafts(now = new Date()) {
     .run().changes
 }
 
-function runOnce() {
+async function runOnce() {
   try {
     const released = releaseDueDrafts()
     if (released > 0) console.log(`Release scheduler: released ${released} draft(s) to the queue`)
   } catch (err) {
     console.warn('Error running release scheduler:', err)
   }
+  // The same tick sweeps the drop box (contract section 9).
+  try {
+    const removed = await sweepExpiredFiles()
+    if (removed > 0) console.log(`Release scheduler: deleted ${removed} expired file(s)`)
+  } catch (err) {
+    console.warn('Error sweeping expired files:', err)
+  }
 }
 
 /** Same pattern as the reminder scheduler: every 60 seconds, first run 5 seconds after start. */
 export function startReleaseScheduler() {
   if (intervalTimer) return
-  intervalTimer = setInterval(runOnce, 60000)
-  setTimeout(runOnce, 5000)
+  intervalTimer = setInterval(() => void runOnce(), 60000)
+  setTimeout(() => void runOnce(), 5000)
 }
 
 export function stopReleaseScheduler() {

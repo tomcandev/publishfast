@@ -12,6 +12,8 @@ export type RequestToken = {
   scope: TokenScope | null
   userId: string | null
   assignees: string[]
+  /** Drop-box key prefix; null = may touch no file. */
+  filePrefix: string | null
 }
 
 declare module 'fastify' {
@@ -68,6 +70,7 @@ export async function attachIdentity(req: FastifyRequest, reply: FastifyReply) {
         scope: row.scope ?? null,
         userId: row.userId ?? null,
         assignees: Array.isArray(row.assignees) ? row.assignees : [],
+        filePrefix: row.filePrefix ?? null,
       }
 
       if (!row.scope) {
@@ -147,5 +150,13 @@ export async function requireExport(req: FastifyRequest, reply: FastifyReply) {
   if (req.tokenRole === 'admin') return
   if (req.user?.role === 'admin') return
   reply.code(req.user || req.apiToken ? 403 : 401).send({ error: 'Read access required' })
+  return reply
+}
+
+/** Drop box: a files- or ingest-scope token, or an admin-power token. Sessions are not used here. */
+export async function requireFileToken(req: FastifyRequest, reply: FastifyReply) {
+  if (req.tokenRole === 'admin') return
+  if (req.apiToken?.scope === 'files' || req.apiToken?.scope === 'ingest') return
+  reply.code(req.user || req.apiToken ? 403 : 401).send({ error: 'A files token is required' })
   return reply
 }

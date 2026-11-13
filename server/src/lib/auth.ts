@@ -106,6 +106,7 @@ export type TokenSettings = {
   assignees?: string[] | null
   expiresAt?: string | null
   createdBy?: string | null
+  filePrefix?: string | null
 }
 
 /**
@@ -126,6 +127,7 @@ export function createApiToken(name: string, role: 'admin' | 'kol' = 'admin', se
       assignees: settings.assignees ?? null,
       expiresAt: settings.expiresAt ?? null,
       createdBy: settings.createdBy ?? null,
+      filePrefix: settings.filePrefix ?? null,
     })
     .run()
   // Returned once and never recoverable — only the hash is stored.
