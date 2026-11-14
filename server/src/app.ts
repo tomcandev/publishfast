@@ -29,6 +29,7 @@ export async function buildApp(
   const app = Fastify({
     logger: opts.logger === false ? false : { level: config.isProd ? 'info' : 'warn' },
     bodyLimit: 2 * 1024 * 1024,
+    requestTimeout: config.requestTimeoutMs,
     trustProxy: true, // behind the Cloudflare Tunnel
   })
 

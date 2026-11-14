@@ -29,6 +29,11 @@ export const config = {
   maxFileBytes: Number(process.env.MAX_FILE_BYTES ?? 90 * 1024 ** 2),
   /** Part size for uploads in parts (routes/uploads.ts): each request stays far under 100 MB. */
   uploadPartBytes: Number(process.env.UPLOAD_PART_BYTES ?? 32 * 1024 ** 2),
+  /**
+   * Longest time one request may take, body included. Longer than the slowest
+   * real upload; stops a client that withholds its body from holding a socket.
+   */
+  requestTimeoutMs: Number(process.env.REQUEST_TIMEOUT_MS ?? 30 * 60_000),
   /** Unfinished part uploads, one folder per upload. */
   partsDir: join(dataDir, 'upload-parts'),
   /** Drop box: total bytes under one token prefix (admin-power tokens exempt). */
