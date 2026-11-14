@@ -163,9 +163,9 @@ Each request re-checks that the caller may see the parent content item, so media
 is exactly as protected as the item itself.
 
 A file removed by the media prune (see [Media prune](#media-prune)) answers **`410`**
-`{ "error": "Media removed 2026-11-17", "reason": "pruned", "prunedAt": "…" }` on both routes, and the zip
-answers `410` when any of the item's files was pruned (a partial carousel is never served). Someone who
-may not see the item still gets `404`. Every asset in a content response carries `prunedAt` (`null` while
+`{ "error": "Media removed 2026-11-17", "reason": "pruned", "prunedAt": "…" }` on both routes. The zip
+holds only the item's files that still exist and answers `410` when none does. Someone who may not see
+the item still gets `404`. Every asset in a content response carries `prunedAt` (`null` while
 the file exists).
 
 ---
@@ -444,17 +444,37 @@ The public-count sync (`POST /api/admin/metrics/sync`, `track-metrics`) fills ea
 
 ## Media prune
 
-Off unless `PRUNE_PUBLISHED_AFTER_DAYS` is set (whole days). Once a day (first run one hour after the
-server starts) the scheduler deletes the media **files** of items that are `PUBLISHED` and whose newest
-publication (`published_at`, else the publication's `created_at`) is older than that many days. Asset
-rows stay with `prunedAt` and their size; the item, its links, counts and snapshots stay. Never touched:
-`DRAFT`, `READY`, `CLAIMED`, `FAILED` items, items with no publication, items with a publication time that
-cannot be read, the drop box, unfinished uploads. By hand, with the same selection:
+Off unless `PRUNE_PUBLISHED_AFTER_DAYS` is set (whole days: `1` means one day). Once a day (first run one
+hour after the server starts) the scheduler deletes the media **files** of items that are `PUBLISHED` and
+whose every publication is older than that many days. A publication's time is the **later** of its
+`published_at` (sent by the poster) and its `created_at` (written by the server), so back-dating a link
+cannot make media go early; only strict ISO times with a zone are read (`2026-11-11T10:00:00Z`,
+`…+08:00`), anything else makes the item "unreadable" and it is left alone. Asset rows stay with
+`prunedAt` and their size; the item, its links, counts and snapshots stay.
+
+Never touched: `DRAFT`, `READY`, `CLAIMED`, `FAILED` items; items with no publication or an unreadable
+time; a file attached less than that many days ago (its own `created_at`); a file another asset row also
+names; the drop box; unfinished uploads. Nothing at all when the server clock looks wrong: a publication
+recorded (`created_at`) more than 24 hours ahead of the clock, or a clock before the newest file's upload
+time; the run logs one line and deletes nothing. A file is deleted only after its row is marked and only
+while no unpruned row names it.
+
+Once an item's media is gone (pruned rows and no live file), it cannot go back to a claimable state:
+`PATCH /api/admin/contents/:id` and `bulk-status` to `READY`/`CLAIMED`, and an admin-token
+`PATCH /api/ingest/contents/:id` to `READY`, answer `409 {reason: "media_pruned"}` (bulk: with `ids`, and
+nothing is written), and the queue never lists or hands out such an item.
+
+By hand, with the same selection:
 
 ```bash
-node server/dist/scripts/prune.js --days 3 --dry-run   # count, bytes, the 10 largest; deletes nothing
+node server/dist/scripts/prune.js --days 3 --dry-run   # read-only: count, bytes, leftovers, the 10 largest
 node server/dist/scripts/prune.js --days 3 --yes       # does it once
 ```
+
+The dry run opens the database read-only and never migrates it (an older schema: it says to run
+`migrate.js` first and stops). It prints what the real run would delete, including files left on disk by
+an earlier run that died between marking and deleting (count and bytes on disk). The real run reports
+bytes freed both by the database's sizes and as measured on disk.
 
 ## Token CLI
 

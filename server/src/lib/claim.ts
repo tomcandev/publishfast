@@ -13,7 +13,29 @@ export function claimableBy(userId: string, assignedOnly = false) {
     assignedOnly
       ? eq(contents.assignedUserId, userId)
       : or(isNull(contents.assignedUserId), eq(contents.assignedUserId, userId)),
+    // An item whose media the prune removed can never be handed out (second line of defence).
+    sql`NOT ${prunedOnly}`,
   )!
+}
+
+/**
+ * SQL, true for a `contents` row whose media was removed by the media prune
+ * (lib/prune.ts) and that has no live file left: it cannot be posted again.
+ * Correlated on `contents.id`, so it is used in queries on `contents`.
+ */
+export const prunedOnly = sql.raw(
+  `(EXISTS (SELECT 1 FROM assets pa WHERE pa.content_id = contents.id AND pa.pruned_at IS NOT NULL)` +
+    ` AND NOT EXISTS (SELECT 1 FROM assets la WHERE la.content_id = contents.id AND la.pruned_at IS NULL))`,
+)
+
+/** The same rule for one item, read now. */
+export function isPrunedOnly(contentId: string) {
+  return !!db.select({ id: contents.id }).from(contents).where(and(eq(contents.id, contentId), prunedOnly)).get()
+}
+
+export const MEDIA_PRUNED = {
+  error: 'This post’s media was removed after it was published; it cannot go back to the queue',
+  reason: 'media_pruned',
 }
 
 export type ClaimOptions = {

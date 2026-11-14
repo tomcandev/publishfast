@@ -107,7 +107,7 @@ export const assets = sqliteTable(
      */
     prunedAt: text('pruned_at'),
   },
-  (t) => [index('assets_content_sort_idx').on(t.contentId, t.sortOrder)],
+  (t) => [index('assets_content_sort_idx').on(t.contentId, t.sortOrder), index('assets_file_path_idx').on(t.filePath)],
 )
 
 export const publications = sqliteTable(

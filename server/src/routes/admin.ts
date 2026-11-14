@@ -1,12 +1,12 @@
 import { unlink } from 'node:fs/promises'
 import { join } from 'node:path'
 import type { FastifyInstance } from 'fastify'
-import { asc, desc, eq, inArray, sql } from 'drizzle-orm'
+import { and, asc, desc, eq, inArray, sql } from 'drizzle-orm'
 import { z } from 'zod'
-import { db } from '../db/index.js'
+import { db, sqlite } from '../db/index.js'
 import { ROLES, apiTokens, assets, contents, publications, pushSubscriptions, reminderSettings, users } from '../db/schema.js'
 import { createApiToken, createUser, hashPassword, publicUser } from '../lib/auth.js'
-import { releaseStaleClaims } from '../lib/claim.js'
+import { MEDIA_PRUNED, isPrunedOnly, prunedOnly, releaseStaleClaims } from '../lib/claim.js'
 import { config } from '../lib/config.js'
 import { isoTime } from '../lib/fields.js'
 import { requireAdmin } from '../lib/guards.js'
@@ -184,8 +184,20 @@ export async function adminRoutes(app: FastifyInstance) {
     // otherwise the release scheduler would put it straight back in the queue.
     if (body.data.status === 'DRAFT' && existing.status !== 'DRAFT') patch.releaseAt = null
 
+    // A move to a claimable state is refused for an item whose media the prune removed;
+    // the condition is inside the UPDATE, so a prune that marks it first wins.
+    const reopens = body.data.status === 'READY' || body.data.status === 'CLAIMED'
+
     try {
-      db.update(contents).set(patch).where(eq(contents.id, id)).run()
+      const result = db
+        .update(contents)
+        .set(patch)
+        .where(reopens ? and(eq(contents.id, id), sql`NOT ${prunedOnly}`) : eq(contents.id, id))
+        .run()
+      if (result.changes === 0) {
+        if (reopens && isPrunedOnly(id)) return reply.code(409).send(MEDIA_PRUNED)
+        return reply.code(404).send({ error: 'Not found' })
+      }
       const updated = db.select().from(contents).where(eq(contents.id, id)).get()!
       const assetRows = db
         .select()
@@ -255,18 +267,36 @@ export async function adminRoutes(app: FastifyInstance) {
       return reply.code(400).send({ error: parsed.error.issues[0]?.message ?? 'Invalid input' })
     }
     const { ids, status } = parsed.data
-    // As in PATCH: moving an item to DRAFT cancels its pending timed release
-    // (items that already were drafts keep theirs; SET sees the old status).
-    const result = db
-      .update(contents)
-      .set(
-        status === 'DRAFT'
-          ? { status, releaseAt: sql`CASE WHEN ${contents.status} = 'DRAFT' THEN ${contents.releaseAt} ELSE NULL END` }
-          : { status },
-      )
-      .where(inArray(contents.id, ids))
-      .run()
-    return { updated: result.changes }
+    const reopens = status === 'READY' || status === 'CLAIMED'
+    // Checked and written under one write lock: an item whose media the prune
+    // removed may not go back to a claimable state; then nothing is written.
+    const outcome = sqlite
+      .transaction(() => {
+        if (reopens) {
+          const pruned = db
+            .select({ id: contents.id })
+            .from(contents)
+            .where(and(inArray(contents.id, ids), prunedOnly))
+            .all()
+            .map((r) => r.id)
+          if (pruned.length > 0) return { pruned }
+        }
+        // As in PATCH: moving an item to DRAFT cancels its pending timed release
+        // (items that already were drafts keep theirs; SET sees the old status).
+        const result = db
+          .update(contents)
+          .set(
+            status === 'DRAFT'
+              ? { status, releaseAt: sql`CASE WHEN ${contents.status} = 'DRAFT' THEN ${contents.releaseAt} ELSE NULL END` }
+              : { status },
+          )
+          .where(inArray(contents.id, ids))
+          .run()
+        return { updated: result.changes }
+      })
+      .immediate()
+    if ('pruned' in outcome) return reply.code(409).send({ ...MEDIA_PRUNED, ids: outcome.pruned })
+    return { updated: outcome.updated }
   })
 
   app.delete('/api/admin/assets/:id', async (req, reply) => {

@@ -93,6 +93,7 @@ const statements = [
     pruned_at TEXT
   )`,
   `CREATE INDEX IF NOT EXISTS assets_content_sort_idx ON assets (content_id, sort_order)`,
+  `CREATE INDEX IF NOT EXISTS assets_file_path_idx ON assets (file_path)`,
 
   `CREATE TABLE IF NOT EXISTS publications (
     id TEXT PRIMARY KEY,

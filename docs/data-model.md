@@ -65,6 +65,8 @@ Media attached to a content item, ordered by `sort_order`. `type` is `video`, `i
 relative to the uploads directory and is **never** sent to the client — media is
 served through `/api/assets/:id`, which re-checks permissions on every request.
 
+`file_path` is indexed; a file that two rows name is never deleted by the prune.
+
 `pruned_at` (nullable) is set by the media prune (`lib/prune.ts`, off unless
 `PRUNE_PUBLISHED_AFTER_DAYS` is set) when it deleted the file of a `PUBLISHED` item a few days after its
 newest publication. The row, its `size` and the item's publications and snapshots stay; downloads and

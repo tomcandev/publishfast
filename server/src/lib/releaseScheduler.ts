@@ -1,4 +1,5 @@
-import { and, eq, isNotNull, isNull, lte } from 'drizzle-orm'
+import { and, eq, isNotNull, isNull, lte, sql } from 'drizzle-orm'
+import { prunedOnly } from './claim.js'
 import { db } from '../db/index.js'
 import { contents } from '../db/schema.js'
 import { sweepExpiredFiles } from './files.js'
@@ -22,6 +23,8 @@ export function releaseDueDrafts(now = new Date()) {
         eq(contents.status, 'DRAFT'),
         isNotNull(contents.releaseAt),
         lte(contents.releaseAt, now.toISOString()),
+        // A draft whose media the prune removed stays a draft.
+        sql`NOT ${prunedOnly}`,
       ),
     )
     .run().changes
@@ -79,11 +82,14 @@ async function runOnce() {
   // ...and, once a day when PRUNE_PUBLISHED_AFTER_DAYS is set, the media of done posts (section 14).
   try {
     const r = await pruneIfDue()
-    if (r) {
+    if (r?.refused) {
+      console.warn(`Media prune: refused to run, nothing deleted: ${r.refused}`)
+    } else if (r) {
       console.log(
-        `Media prune: deleted ${r.deleted} file(s), ${formatMb(r.bytesFreed ?? 0)} freed ` +
-          `(${r.alreadyMissing} already missing, ${r.failed} failed, ${r.changed} skipped as changed, ` +
-          `${r.leftoversDeleted} leftover(s) from earlier runs)`,
+        `Media prune: deleted ${r.deleted} file(s), ${formatMb(r.diskBytesFreed ?? 0)} freed on disk ` +
+          `(${formatMb(r.bytesFreed ?? 0)} by the database's sizes; ${r.alreadyMissing} already missing, ${r.failed} failed, ` +
+          `${r.changed} skipped as changed, ${r.keptShared} kept as shared; ${r.leftovers.files} leftover(s) from earlier runs; ` +
+          `left alone: ${r.skippedShared} shared, ${r.skippedYoung} recently attached, ${r.skippedUnreadable} item(s) with an unreadable time)`,
       )
     }
   } catch (err) {

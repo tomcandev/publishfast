@@ -90,9 +90,12 @@ export async function assetRoutes(app: FastifyInstance) {
       .all()
 
     if (rows.length === 0) return reply.code(404).send({ error: 'This post has no media files' })
-    // A zip missing some of its files would be posted as an incomplete carousel: refuse it whole.
-    const pruned = rows.find((a) => a.prunedAt)
-    if (pruned) return reply.code(410).send(prunedReply(pruned.prunedAt!))
+    // Only the files that still exist; 410 when the prune removed all of them.
+    const live = rows.filter((a) => !a.prunedAt)
+    if (live.length === 0) {
+      const newest = rows.map((a) => a.prunedAt!).sort().at(-1)!
+      return reply.code(410).send(prunedReply(newest))
+    }
 
     const archive = archiver('zip', { zlib: { level: 0 } }) // media is already compressed
     reply
@@ -107,7 +110,7 @@ export async function assetRoutes(app: FastifyInstance) {
       reply.raw.destroy(err)
     })
 
-    for (const [i, asset] of rows.entries()) {
+    for (const [i, asset] of live.entries()) {
       const abs = safeUploadPath(asset.filePath)
       if (!abs || !existsSync(abs)) continue
       const ext = asset.originalName.includes('.') ? asset.originalName.split('.').pop() : 'bin'

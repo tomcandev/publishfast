@@ -27,6 +27,7 @@ import { META_MAX_BYTES, isoTime, jsonObject } from '../lib/fields.js'
 import { requireIngest } from '../lib/guards.js'
 import { stripTokenIds } from '../lib/holds.js'
 import { discardUploads, unfinishedUploads } from '../lib/uploads.js'
+import { MEDIA_PRUNED, isPrunedOnly, prunedOnly } from '../lib/claim.js'
 
 import { inferHookId } from '../lib/metrics.js'
 
@@ -262,16 +263,21 @@ export async function ingestRoutes(app: FastifyInstance) {
     try {
       // For an ingest-scope token the DRAFT and ownership checks are repeated
       // inside the UPDATE, so a release that lands in between wins.
+      // An old or admin token may move any item to READY, except one whose media the prune removed.
+      const reopens = patch.status === 'READY'
       const result = db
         .update(contents)
         .set(patch)
         .where(
           scoped
             ? and(eq(contents.id, id), eq(contents.status, 'DRAFT'), eq(contents.createdByToken, scoped.id))
-            : eq(contents.id, id),
+            : reopens
+              ? and(eq(contents.id, id), sql`NOT ${prunedOnly}`)
+              : eq(contents.id, id),
         )
         .run()
       if (result.changes === 0) {
+        if (!scoped && reopens && isPrunedOnly(id)) return reply.code(409).send(MEDIA_PRUNED)
         return reply.code(409).send({ error: 'This item is no longer a draft and cannot be changed', reason: 'not_draft' })
       }
     } catch (err) {

@@ -187,8 +187,11 @@ are read exactly as before.
 before the first run:
 
 1. Take a backup of `data/` (above).
-2. Run the dry run with the number of days you mean to set, and read it: how many files, how many bytes,
-   the 10 largest, and how many items were left alone because a publication time cannot be read.
+2. Migrate first (`node server/dist/db/migrate.js`, part of the upgrade above): the dry run opens the
+   database read-only and stops if the schema is older than the code. Then run the dry run with the number
+   of days you mean to set, and read it: how many files, how many bytes, the leftovers of an earlier run,
+   the 10 largest, and what was left alone (items with a publication time that cannot be read, files
+   another row also names, files attached recently).
    ```bash
    cd ~/projects/publishfast
    node server/dist/scripts/prune.js --days 3 --dry-run
@@ -198,7 +201,10 @@ before the first run:
 3. Either run it once by hand (`node server/dist/scripts/prune.js --days 3 --yes`) or set
    `PRUNE_PUBLISHED_AFTER_DAYS=3` in `.env` and restart: the server logs
    `Media prune: on …` at start, runs the first prune one hour later, then once a day, and logs each run
-   (`Media prune: deleted N file(s), X MB freed …`).
+   (`Media prune: deleted N file(s), X MB freed on disk …`). If the server clock looks wrong it logs
+   `Media prune: refused to run, nothing deleted: …` instead.
+   `PRUNE_PUBLISHED_AFTER_DAYS` is a number of days, not an on/off flag like `SWEEP_ORPHAN_UPLOADS`:
+   `1` means files go one day after publishing.
 4. Admin → Storage shows what is stored by item status, what was removed so far and the free disk.
 
 To turn it off again, remove the line (or set `0`) and restart. Files already removed stay removed (restore
@@ -251,7 +257,7 @@ machine over a secure channel and delete it here.
 | `MAX_FILE_BYTES` | `94371840` (90 MB) | per drop-box file (`PUT /api/files/<key>`); keep under Cloudflare's 100 MB request limit |
 | `UPLOAD_PART_BYTES` | `33554432` (32 MB) | part size for uploads in parts |
 | `SWEEP_ORPHAN_UPLOADS` | off | `1`/`true`: the scheduler deletes files in `uploads/` with no asset row older than one hour |
-| `PRUNE_PUBLISHED_AFTER_DAYS` | off | whole days (1–3650). Once a day the media files of `PUBLISHED` items whose newest publication is older than that are deleted (rows stay, downloads answer `410`). Unset, `0` or anything else = never. Run `node server/dist/scripts/prune.js --days N --dry-run` and read it before setting it |
+| `PRUNE_PUBLISHED_AFTER_DAYS` | off | whole days (1–3650); **a number of days, not a flag: `1` means one day**. Once a day the media files of `PUBLISHED` items whose newest publication is older than that are deleted (rows stay, downloads answer `410`). Unset, `0` or anything else = never. Run `node server/dist/scripts/prune.js --days N --dry-run` and read it before setting it |
 | `REQUEST_TIMEOUT_MS` | `1800000` (30 min) | longest one request may take, body included; keep above the slowest real upload |
 | `MAX_FILES_PREFIX_BYTES` | `2147483648` (2 GB) | drop box: total under one token prefix; admin tokens exempt |
 | `MAX_INGEST_BYTES` | `5368709120` (5 GB) | total DRAFT+READY media one ingest-scope token may hold; admin tokens exempt |
