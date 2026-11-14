@@ -10,7 +10,11 @@ import { holdConflict, holdReply } from '../lib/holds.js'
 const upsertSchema = z.object({
   contentId: z.string().min(1),
   platform: z.enum(PLATFORMS),
-  publishedUrl: z.string().url('Invalid URL'),
+  // http(s) only: a javascript: or data: link would run when someone clicks it.
+  publishedUrl: z
+    .string()
+    .url('Invalid URL')
+    .refine((u) => /^https?:\/\//i.test(u), 'The link must start with http:// or https://'),
   /** The public time (e.g. a scheduled video's). A `Z` time is stored as sent; an offset is converted to UTC. */
   publishedAt: z
     .string()

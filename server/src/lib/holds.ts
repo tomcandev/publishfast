@@ -71,3 +71,9 @@ export function withClaimInfo<T extends Content>(req: FastifyRequest | null, row
     ...(tokenId ? { claimedByThisToken: !!claimedByToken && claimedByToken === tokenId } : {}),
   }))
 }
+
+/** A content row without the internal token ids (created_by_token, claimed_by_token). */
+export function stripTokenIds<T extends { createdByToken?: string | null; claimedByToken?: string | null }>(row: T) {
+  const { createdByToken: _created, claimedByToken: _claimed, ...rest } = row
+  return rest
+}

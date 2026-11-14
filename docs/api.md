@@ -117,6 +117,7 @@ Items this KOL has completed.
 ```
 
 Platforms: `tiktok`, `instagram`, `youtube_shorts`, `youtube` (long videos), `facebook`, `other`.
+`publishedUrl` must be an `http://` or `https://` link.
 Optional `publishedAt` (ISO 8601; an offset is converted to UTC) — e.g. a scheduled video's public time.
 
 Submitting the same `(contentId, platform)` again updates the existing row.
@@ -181,8 +182,11 @@ Bearer token (or an admin session). For comprehensive workflows, Python/Node.js 
 * `meta`: a JSON object ≤ 64 KB, free-form per platform (e.g. `meta.youtube.title`, `description`, `tags`).
 * `source`: ≤ 200 chars, where it came from (e.g. `nhi#12`).
 * `409` if `code` already exists.
+* Scoped (`ingest`) tokens: `code` may only use `A-Z a-z 0-9 . _ -`. With assignees, `assignedUserId`
+  must be one of them; with an empty list, items must be unassigned. Unknown users and users outside the
+  list get the same `400`.
 
-Times are stored as UTC. An `ingest`-scope token may only read, patch, upload to, withdraw or delete
+Responses never include the internal `createdByToken` / `claimedByToken` ids. Times are stored as UTC. An `ingest`-scope token may only read, patch, upload to, withdraw or delete
 items it created (others answer `404`), and may change nothing on an item that has left `DRAFT` (`409`,
 `reason: "not_draft"`).
 

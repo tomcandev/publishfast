@@ -759,15 +759,24 @@ export function Post() {
 
 /** Publish slot and YouTube details from the pipeline, each with a copy button. */
 function PostingDetails({ content }: { content: Content }) {
-  const yt = content.meta?.youtube
-  const tags = Array.isArray(yt?.tags) ? yt.tags.filter((t): t is string => typeof t === 'string') : []
-  if (!content.publishAt && !yt) return null
+  // meta is free-form JSON from a pipeline: render only real strings / string arrays.
+  const raw = content.meta?.youtube as Record<string, unknown> | undefined
+  const yt =
+    raw && typeof raw === 'object' && !Array.isArray(raw)
+      ? {
+          title: typeof raw.title === 'string' ? raw.title : undefined,
+          description: typeof raw.description === 'string' ? raw.description : undefined,
+        }
+      : undefined
+  const tags = Array.isArray(raw?.tags) ? raw.tags.filter((t): t is string => typeof t === 'string') : []
+  const publishAt = typeof content.publishAt === 'string' && !Number.isNaN(Date.parse(content.publishAt)) ? content.publishAt : null
+  if (!publishAt && !yt?.title && !yt?.description && tags.length === 0) return null
   return (
     <div className="card stack" style={{ gap: 10 }}>
-      {content.publishAt && (
+      {publishAt && (
         <div className="row-tight">
           <span className="hint">Publish at</span>
-          <strong>{new Date(content.publishAt).toLocaleString()}</strong>
+          <strong>{new Date(publishAt).toLocaleString()}</strong>
         </div>
       )}
       {yt?.title && (

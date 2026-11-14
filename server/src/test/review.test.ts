@@ -413,3 +413,78 @@ describe('finding 7: token rotate keeps the token’s work', () => {
     assert.equal(db.select().from(files).where(eq(files.key, 'rot/a')).get()!.createdByToken, fresh.id)
   })
 })
+
+describe('small fixes', () => {
+  it('no response carries created_by_token or claimed_by_token ids', async () => {
+    const yt = makeUser('review-ids', 'kol', { assignedOnly: true })
+    const maker = createApiToken('review-ids-maker', 'kol', { scope: 'ingest', assignees: [yt.id] })
+    const poster = createApiToken('review-ids-poster', 'kol', { scope: 'poster', userId: yt.id })
+    const created = await call(app, 'POST', '/api/ingest/contents', { token: maker }, { code: 'REVIEW-IDS', assignedUserId: yt.id })
+    const id = created.json().content.id
+    await uploadPart(id, maker, 'i.mp4', 'video/mp4')
+    const ready = await call(app, 'PATCH', `/api/ingest/contents/${id}`, { token: maker }, { status: 'READY' })
+    await call(app, 'POST', `/api/contents/${id}/claim`, { token: poster })
+    const ids = db.select({ id: apiTokens.id }).from(apiTokens).all().map((t) => t.id)
+    const bodies = [
+      created.body,
+      ready.body,
+      (await call(app, 'GET', `/api/ingest/contents/${id}`, { token: maker })).body,
+      (await call(app, 'GET', '/api/ingest/contents?code=REVIEW-IDS', { token: maker })).body,
+      (await call(app, 'GET', `/api/contents/${id}`, { token: poster })).body,
+      (await call(app, 'GET', '/api/admin/contents', { cookie: adminCookie })).body,
+      (await call(app, 'PATCH', `/api/admin/contents/${id}`, { cookie: adminCookie }, { title: 't' })).body,
+    ]
+    for (const body of bodies) {
+      assert.ok(!body.includes('"createdByToken"') && !body.includes('"claimedByToken"'), body.slice(0, 80))
+      for (const t of ids) assert.ok(!body.includes(t), 'a token id leaked')
+    }
+  })
+
+  it('publications accept only http(s) links', async () => {
+    const u = makeUser('review-links', 'kol')
+    const cookie = await sessionFor(u.id)
+    const id = makeContent({ status: 'CLAIMED', claimedBy: u.id })
+    for (const url of ['javascript:alert(1)', 'data:text/html,<script>1</script>', 'ftp://example.test/x']) {
+      const res = await call(app, 'POST', '/api/publications', { cookie }, { contentId: id, platform: 'other', publishedUrl: url })
+      assert.equal(res.statusCode, 400, url)
+    }
+    const ok = await call(app, 'POST', '/api/publications', { cookie }, { contentId: id, platform: 'other', publishedUrl: 'https://example.test/x' })
+    assert.equal(ok.statusCode, 200)
+  })
+
+  it('scoped tokens may only use codes of [A-Za-z0-9._-]', async () => {
+    const maker = createApiToken('review-codes', 'kol', { scope: 'ingest' })
+    for (const code of ['A B', 'NHI/1', 'ü', 'x\u0001', '<b>']) {
+      assert.equal((await call(app, 'POST', '/api/ingest/contents', { token: maker }, { code })).statusCode, 400, code)
+    }
+    const ok = await call(app, 'POST', '/api/ingest/contents', { token: maker }, { code: 'NHI-PTE-P04.v2_x' })
+    assert.equal(ok.statusCode, 201)
+    const patched = await call(app, 'PATCH', `/api/ingest/contents/${ok.json().content.id}`, { token: maker }, { code: 'bad code' })
+    assert.equal(patched.statusCode, 400)
+    // Old tokens keep their freedom.
+    assert.equal((await call(app, 'POST', '/api/ingest/contents', { token: legacyAdmin }, { code: 'OLD CODE ü' })).statusCode, 201)
+  })
+
+  it('a scoped token gets the same answer for an unknown user and a user outside its list', async () => {
+    const yt = makeUser('review-same')
+    const outsider = makeUser('review-outsider')
+    const maker = createApiToken('review-same-maker', 'kol', { scope: 'ingest', assignees: [yt.id] })
+    const a = await call(app, 'POST', '/api/ingest/contents', { token: maker }, { code: 'REVIEW-S1', assignedUserId: 'no-such-user' })
+    const b = await call(app, 'POST', '/api/ingest/contents', { token: maker }, { code: 'REVIEW-S2', assignedUserId: outsider.username })
+    assert.equal(a.statusCode, 400)
+    assert.deepEqual(a.json(), b.json())
+  })
+
+  it('an ingest token with an empty assignee list may only create unassigned items', async () => {
+    const open = createApiToken('review-open-maker', 'kol', { scope: 'ingest', assignees: [] })
+    const someone = makeUser('review-someone')
+    const res = await call(app, 'POST', '/api/ingest/contents', { token: open }, { code: 'REVIEW-E1', assignedUserId: someone.id })
+    assert.equal(res.statusCode, 400)
+    const unknown = await call(app, 'POST', '/api/ingest/contents', { token: open }, { code: 'REVIEW-E2', assignedUserId: 'nobody' })
+    assert.deepEqual(unknown.json(), res.json())
+    const okay = await call(app, 'POST', '/api/ingest/contents', { token: open }, { code: 'REVIEW-E3' })
+    assert.equal(okay.statusCode, 201)
+    const patch = await call(app, 'PATCH', `/api/ingest/contents/${okay.json().content.id}`, { token: open }, { assignedUserId: someone.id })
+    assert.equal(patch.statusCode, 400)
+  })
+})

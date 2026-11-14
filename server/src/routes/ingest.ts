@@ -13,6 +13,7 @@ import { NO_SPACE, belowFreeSpaceFloor, byteLimit, httpError, ingestBytesHeld } 
 import { classifyUpload, isActiveContent } from '../lib/download.js'
 import { META_MAX_BYTES, isoTime, jsonObject } from '../lib/fields.js'
 import { requireIngest } from '../lib/guards.js'
+import { stripTokenIds } from '../lib/holds.js'
 
 import { inferHookId } from '../lib/metrics.js'
 
@@ -64,7 +65,7 @@ function withAssets(rows: Content[]) {
     .orderBy(asc(assets.sortOrder))
     .all()
   return rows.map((row) => ({
-    ...row,
+    ...stripTokenIds(row),
     assets: assetRows
       .filter((a) => a.contentId === row.id)
       // Never expose on-disk paths to the client.
@@ -90,6 +91,27 @@ const HAS_PUBLICATIONS = {
 }
 
 const ASSIGNEE_REQUIRED = 'This token must assign every item to one of its assignees'
+const UNASSIGNED_ONLY = 'This token may only create unassigned items'
+/** Codes a scoped token may use. Old tokens keep their freedom. */
+const SCOPED_CODE = /^[A-Za-z0-9._-]+$/
+
+/**
+ * Resolves the assignee an ingest call asks for. A scoped token gets one
+ * answer for "no such user" and "not one of yours", so it cannot probe
+ * accounts; with an empty assignee list it may assign nobody.
+ */
+function assigneeFor(req: FastifyRequest, value: string | undefined): { id: string | null } | { error: string } {
+  const scoped = ingestScoped(req)
+  if (value === undefined) {
+    return scoped && scoped.assignees.length > 0 ? { error: ASSIGNEE_REQUIRED } : { id: null }
+  }
+  const resolved = resolveAssignee(value)
+  if (scoped) {
+    if (scoped.assignees.length === 0) return { error: UNASSIGNED_ONLY }
+    return resolved && scoped.assignees.includes(resolved) ? { id: resolved } : { error: ASSIGNEE_REQUIRED }
+  }
+  return resolved ? { id: resolved } : { error: 'Unknown assignedUserId' }
+}
 
 /** A random stored name; only a short alphanumeric extension of the client's name survives. */
 export function storedName(filename: string) {
@@ -114,19 +136,14 @@ export async function ingestRoutes(app: FastifyInstance) {
       return reply.code(400).send({ error: parsed.error.issues[0]?.message ?? 'Invalid input' })
     }
 
-    let assignedUserId: string | null = null
-    if (parsed.data.assignedUserId !== undefined) {
-      assignedUserId = resolveAssignee(parsed.data.assignedUserId)
-      if (!assignedUserId) return reply.code(400).send({ error: 'Unknown assignedUserId' })
-    }
-
     const scoped = ingestScoped(req)
-    if (scoped && scoped.assignees.length > 0) {
-      // Never defaulted to the open queue: the item must name one of the token's assignees.
-      if (!assignedUserId || !scoped.assignees.includes(assignedUserId)) {
-        return reply.code(400).send({ error: ASSIGNEE_REQUIRED })
-      }
+    if (scoped && !SCOPED_CODE.test(parsed.data.code)) {
+      return reply.code(400).send({ error: 'code may only contain A-Z a-z 0-9 . _ -' })
     }
+    // Never defaulted to the open queue for a token with assignees.
+    const assignee = assigneeFor(req, parsed.data.assignedUserId)
+    if ('error' in assignee) return reply.code(400).send({ error: assignee.error })
+    const assignedUserId = assignee.id
 
     const existing = db.select().from(contents).where(eq(contents.code, parsed.data.code)).get()
     if (existing) return reply.code(409).send({ error: `Code "${parsed.data.code}" already exists` })
@@ -145,7 +162,7 @@ export async function ingestRoutes(app: FastifyInstance) {
       .run()
 
     req.audit = { contentId: id }
-    return reply.code(201).send({ content: db.select().from(contents).where(eq(contents.id, id)).get() })
+    return reply.code(201).send({ content: stripTokenIds(db.select().from(contents).where(eq(contents.id, id)).get()!) })
   })
 
   /**
@@ -194,11 +211,14 @@ export async function ingestRoutes(app: FastifyInstance) {
       return reply.code(409).send({ error: 'This item is no longer a draft and cannot be changed', reason: 'not_draft' })
     }
 
+    if (scoped && parsed.data.code !== undefined && !SCOPED_CODE.test(parsed.data.code)) {
+      return reply.code(400).send({ error: 'code may only contain A-Z a-z 0-9 . _ -' })
+    }
     const patch: Partial<typeof contents.$inferInsert> = { ...parsed.data }
     if (parsed.data.assignedUserId !== undefined) {
-      const resolved = resolveAssignee(parsed.data.assignedUserId)
-      if (!resolved) return reply.code(400).send({ error: 'Unknown assignedUserId' })
-      patch.assignedUserId = resolved
+      const assignee = assigneeFor(req, parsed.data.assignedUserId)
+      if ('error' in assignee) return reply.code(400).send({ error: assignee.error })
+      patch.assignedUserId = assignee.id
     }
     if (scoped && scoped.assignees.length > 0) {
       const finalAssignee = patch.assignedUserId ?? existing.assignedUserId
@@ -210,7 +230,7 @@ export async function ingestRoutes(app: FastifyInstance) {
     if (patch.status === 'DRAFT' && existing.status !== 'DRAFT' && patch.releaseAt === undefined) {
       patch.releaseAt = null
     }
-    if (Object.keys(patch).length === 0) return { content: existing }
+    if (Object.keys(patch).length === 0) return { content: stripTokenIds(existing) }
 
     try {
       // For an ingest-scope token the DRAFT and ownership checks are repeated
@@ -233,7 +253,7 @@ export async function ingestRoutes(app: FastifyInstance) {
       }
       throw err
     }
-    return { content: db.select().from(contents).where(eq(contents.id, id)).get() }
+    return { content: stripTokenIds(db.select().from(contents).where(eq(contents.id, id)).get()!) }
   })
 
   /**
