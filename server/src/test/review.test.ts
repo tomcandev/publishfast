@@ -14,6 +14,7 @@ import { migrate } from '../db/migrate.js'
 import { apiTokens, assets, contents, files, metricSnapshots, publications } from '../db/schema.js'
 import { createApiToken } from '../lib/auth.js'
 import { config } from '../lib/config.js'
+import { SANDBOX_CSP } from '../lib/download.js'
 import { _resetBearerFailures } from '../lib/rateLimit.js'
 import { call, makeContent, makeUser, multipartFile, sessionFor } from './helpers.js'
 
@@ -74,7 +75,7 @@ describe('finding 1: uploaded files cannot run script in the app origin', () => 
         assert.equal(res.headers['content-type'], 'application/octet-stream', name)
         assert.match(String(res.headers['content-disposition']), /^attachment;/, name)
         assert.equal(res.headers['x-content-type-options'], 'nosniff')
-        assert.equal(res.headers['content-security-policy'], "sandbox; default-src 'none'")
+        assert.equal(res.headers['content-security-policy'], SANDBOX_CSP)
       }
     }
   })
@@ -91,7 +92,7 @@ describe('finding 1: uploaded files cannot run script in the app origin', () => 
       assert.equal(res.headers['content-type'], mime)
       assert.match(String(res.headers['content-disposition']), /^inline;/)
       assert.equal(res.headers['x-content-type-options'], 'nosniff')
-      assert.equal(res.headers['content-security-policy'], "sandbox; default-src 'none'")
+      assert.equal(res.headers['content-security-policy'], SANDBOX_CSP)
     }
   })
 
@@ -119,7 +120,7 @@ describe('finding 1: uploaded files cannot run script in the app origin', () => 
     await uploadPart(id, legacyAdmin, 'z.png', 'image/png')
     const zip = await call(app, 'GET', `/api/contents/${id}/assets.zip`, { cookie: adminCookie })
     assert.equal(zip.headers['x-content-type-options'], 'nosniff')
-    assert.equal(zip.headers['content-security-policy'], "sandbox; default-src 'none'")
+    assert.equal(zip.headers['content-security-policy'], SANDBOX_CSP)
 
     const worker = createApiToken('review-files', 'kol', { scope: 'files', filePrefix: 'r/' })
     await app.inject({
@@ -132,7 +133,7 @@ describe('finding 1: uploaded files cannot run script in the app origin', () => 
     assert.equal(dl.headers['content-type'], 'application/octet-stream')
     assert.match(String(dl.headers['content-disposition']), /^attachment;/)
     assert.equal(dl.headers['x-content-type-options'], 'nosniff')
-    assert.equal(dl.headers['content-security-policy'], "sandbox; default-src 'none'")
+    assert.equal(dl.headers['content-security-policy'], SANDBOX_CSP)
   })
 })
 
@@ -440,11 +441,11 @@ describe('small fixes', () => {
     }
   })
 
-  it('publications accept only http(s) links', async () => {
+  it('publications refuse script and data links (sessions keep other schemes: second review, S2)', async () => {
     const u = makeUser('review-links', 'kol')
     const cookie = await sessionFor(u.id)
     const id = makeContent({ status: 'CLAIMED', claimedBy: u.id })
-    for (const url of ['javascript:alert(1)', 'data:text/html,<script>1</script>', 'ftp://example.test/x']) {
+    for (const url of ['javascript:alert(1)', 'data:text/html,<script>1</script>']) {
       const res = await call(app, 'POST', '/api/publications', { cookie }, { contentId: id, platform: 'other', publishedUrl: url })
       assert.equal(res.statusCode, 400, url)
     }

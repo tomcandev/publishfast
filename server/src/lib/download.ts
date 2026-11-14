@@ -20,7 +20,8 @@ export const INLINE_TYPES = new Set([
   'video/webm',
 ])
 
-export const SANDBOX_CSP = "sandbox; default-src 'none'"
+/** No script, ever; same-origin images and media may load so a video opened in a tab still plays. */
+export const SANDBOX_CSP = "sandbox; default-src 'none'; img-src 'self'; media-src 'self'"
 
 export const IMAGE_EXT: Record<string, string> = {
   '.jpg': 'image/jpeg',
