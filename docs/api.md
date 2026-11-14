@@ -346,6 +346,13 @@ node server/dist/scripts/token.js <command> …
   keeps its length, counted from now). In the same transaction the items it created, the claims it holds
   and its drop-box files move to the new token, so a draft or an in-flight claim continues.
 
+## Known limits (documented, not built)
+
+- `token_events` and `metric_snapshots` are never pruned. Both are small rows; prune by hand (or add a
+  job) if they ever matter.
+- A person cannot correct a link on an item an agent's token completed (it stays held by that token:
+  `409 held_by_agent`). An admin can.
+
 ## Health
 
 `GET /api/health` → `{ "ok": true }`
