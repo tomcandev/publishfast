@@ -234,9 +234,12 @@ export function Queue() {
                 {available.map((c) => (
                   <div key={c.id} className="list-item">
                     <div className="stack min0" style={{ gap: 3, flex: 1 }}>
-                      <div className="row-tight">
+                      <div className="row-tight" style={{ flexWrap: 'wrap' }}>
                         <span className="code">{c.code}</span>
                         <ContentTypeBadge contentType={c.contentType} assetCount={c.assets?.length} />
+                        {c.assignExpiresAt && c.assignedUserId === user?.id && (
+                          <span className="hint">yours until {formatDate(c.assignExpiresAt)}</span>
+                        )}
                       </div>
                       <div className="truncate" style={{ color: 'var(--text-soft)', fontSize: '0.9rem' }}>
                         {c.title || c.caption || 'Untitled'}

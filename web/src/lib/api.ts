@@ -98,6 +98,8 @@ export interface Content {
   contentType: 'video' | 'carousel'
   status: ContentStatus
   assignedUserId: string | null
+  /** When set, the assignment ends then and the item goes back to the open queue. */
+  assignExpiresAt?: string | null
   claimedBy: string | null
   claimedAt: string | null
   hookId?: string | null

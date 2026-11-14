@@ -1,4 +1,4 @@
-import { and, eq, isNotNull, lte } from 'drizzle-orm'
+import { and, eq, isNotNull, isNull, lte } from 'drizzle-orm'
 import { db } from '../db/index.js'
 import { contents } from '../db/schema.js'
 import { sweepExpiredFiles } from './files.js'
@@ -27,12 +27,40 @@ export function releaseDueDrafts(now = new Date()) {
     .run().changes
 }
 
+/**
+ * Puts READY, unclaimed items whose assignment has expired back in the open
+ * queue, as one compare-and-swap UPDATE: a claim that lands first wins (the
+ * row is no longer READY and unclaimed), and items without an expiry are
+ * never touched. Returns how many it unassigned.
+ */
+export function expireAssignments(now = new Date()) {
+  return db
+    .update(contents)
+    .set({ assignedUserId: null, assignExpiresAt: null })
+    .where(
+      and(
+        eq(contents.status, 'READY'),
+        isNotNull(contents.assignedUserId),
+        isNull(contents.claimedBy),
+        isNotNull(contents.assignExpiresAt),
+        lte(contents.assignExpiresAt, now.toISOString()),
+      ),
+    )
+    .run().changes
+}
+
 async function runOnce() {
   try {
     const released = releaseDueDrafts()
     if (released > 0) console.log(`Release scheduler: released ${released} draft(s) to the queue`)
   } catch (err) {
     console.warn('Error running release scheduler:', err)
+  }
+  try {
+    const unassigned = expireAssignments()
+    if (unassigned > 0) console.log(`Release scheduler: ${unassigned} expired assignment(s) returned to the open queue`)
+  } catch (err) {
+    console.warn('Error expiring assignments:', err)
   }
   // The same tick sweeps the drop box (contract section 9).
   try {

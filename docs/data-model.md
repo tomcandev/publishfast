@@ -48,6 +48,7 @@ One row per piece of content to be posted.
 | `content_type` | `video` or `carousel` |
 | `status` | see the flow below |
 | `assigned_user_id` | optional pre-assignment — only this user may claim it |
+| `assign_expires_at` | ISO UTC, nullable. When it has passed, the scheduler clears the assignment of a `READY`, unclaimed item (and this field), returning it to the open queue. `NULL` = assigned for ever |
 | `claimed_by`, `claimed_at` | set atomically on claim |
 | `claimed_by_token` | the poster token that made the claim; `NULL` for a session claim; cleared on release |
 | `hook_id` | marketing hook id |

@@ -51,6 +51,11 @@ export const contents = sqliteTable(
     status: text('status', { enum: CONTENT_STATUSES }).notNull().default('DRAFT'),
     /** Optional pre-assignment: only this user may claim it. */
     assignedUserId: text('assigned_user_id').references(() => users.id, { onDelete: 'set null' }),
+    /**
+     * ISO UTC. When set, a READY unclaimed item whose time has come goes back
+     * to the open queue (assignment cleared by the scheduler). NULL = assigned for ever.
+     */
+    assignExpiresAt: text('assign_expires_at'),
     claimedBy: text('claimed_by').references(() => users.id, { onDelete: 'set null' }),
     claimedAt: text('claimed_at'),
     /** Optional hook identifier from marketing templates (e.g. h_score_01) */

@@ -43,6 +43,8 @@ const createSchema = z.object({
   releaseAt: isoTime.nullable().optional(),
   /** When the post should go public on its platform (information for the poster). */
   publishAt: isoTime.nullable().optional(),
+  /** The assignment ends at this time (needs an assignee; not for a token with an assignee list). */
+  assignExpiresAt: isoTime.nullable().optional(),
   meta: jsonObject(META_MAX_BYTES, 'meta').nullable().optional(),
   source: z.string().max(200).nullable().optional(),
 })
@@ -106,6 +108,8 @@ const HAS_PUBLICATIONS = {
 }
 
 const ASSIGNEE_REQUIRED = 'This token must assign every item to one of its assignees'
+const NO_EXPIRY = 'This token’s items stay with its assignees; it may not set assignExpiresAt'
+const EXPIRY_NEEDS_ASSIGNEE = 'assignExpiresAt needs an assignee'
 const UNASSIGNED_ONLY = 'This token may only create unassigned items'
 /** Codes a scoped token may use. Old tokens keep their freedom. */
 const SCOPED_CODE = /^[A-Za-z0-9._-]+$/
@@ -159,6 +163,10 @@ export async function ingestRoutes(app: FastifyInstance) {
     const assignee = assigneeFor(req, parsed.data.assignedUserId)
     if ('error' in assignee) return reply.code(400).send({ error: assignee.error })
     const assignedUserId = assignee.id
+    if (parsed.data.assignExpiresAt) {
+      if (scoped && scoped.assignees.length > 0) return reply.code(400).send({ error: NO_EXPIRY })
+      if (!assignedUserId) return reply.code(400).send({ error: EXPIRY_NEEDS_ASSIGNEE })
+    }
 
     const existing = db.select().from(contents).where(eq(contents.code, parsed.data.code)).get()
     if (existing) return reply.code(409).send({ error: `Code "${parsed.data.code}" already exists` })
@@ -240,6 +248,10 @@ export async function ingestRoutes(app: FastifyInstance) {
       if (!finalAssignee || !scoped.assignees.includes(finalAssignee)) {
         return reply.code(400).send({ error: ASSIGNEE_REQUIRED })
       }
+      if (parsed.data.assignExpiresAt) return reply.code(400).send({ error: NO_EXPIRY })
+    }
+    if (parsed.data.assignExpiresAt && !(patch.assignedUserId ?? existing.assignedUserId)) {
+      return reply.code(400).send({ error: EXPIRY_NEEDS_ASSIGNEE })
     }
     // Moving an item back to DRAFT cancels a pending release unless a new one is given.
     if (patch.status === 'DRAFT' && existing.status !== 'DRAFT' && patch.releaseAt === undefined) {

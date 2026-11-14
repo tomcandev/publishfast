@@ -29,6 +29,7 @@ const addedColumns: [table: string, column: string, ddl: string][] = [
   ['uploads', 'completing_at', 'TEXT'],
   ['upload_parts', 'file', 'TEXT'],
   ['assets', 'pruned_at', 'TEXT'],
+  ['contents', 'assign_expires_at', 'TEXT'],
   ['publications', 'sound_id', 'TEXT'],
   ['publications', 'sound_title', 'TEXT'],
   ['publications', 'sound_author', 'TEXT'],
@@ -69,7 +70,8 @@ const statements = [
     source TEXT,
     created_by_token TEXT,
     claimed_by_token TEXT,
-    created_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ','now'))
+    created_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ','now')),
+    assign_expires_at TEXT
   )`,
   `CREATE UNIQUE INDEX IF NOT EXISTS contents_code_unique ON contents (code)`,
   `CREATE INDEX IF NOT EXISTS contents_status_created_idx ON contents (status, created_at)`,

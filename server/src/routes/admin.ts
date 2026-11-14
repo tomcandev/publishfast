@@ -8,6 +8,7 @@ import { ROLES, apiTokens, assets, contents, publications, pushSubscriptions, re
 import { createApiToken, createUser, hashPassword, publicUser } from '../lib/auth.js'
 import { releaseStaleClaims } from '../lib/claim.js'
 import { config } from '../lib/config.js'
+import { isoTime } from '../lib/fields.js'
 import { requireAdmin } from '../lib/guards.js'
 import { stripTokenIds, withClaimInfo } from '../lib/holds.js'
 import { getHookPerformanceSummary, syncAllPublicationMetrics } from '../lib/metrics.js'
@@ -156,12 +157,18 @@ export async function adminRoutes(app: FastifyInstance) {
         contentType: z.enum(['video', 'carousel']).optional(),
         status: z.enum(['DRAFT', 'READY', 'CLAIMED', 'PUBLISHED', 'FAILED']).optional(),
         assignedUserId: z.string().nullable().optional(),
+        /** The assignment ends at this time (READY, unclaimed items go back to the open queue). */
+        assignExpiresAt: isoTime.nullable().optional(),
       })
       .safeParse(req.body)
     if (!body.success) return reply.code(400).send({ error: body.error.issues[0]?.message ?? 'Invalid input' })
 
     const existing = db.select().from(contents).where(eq(contents.id, id)).get()
     if (!existing) return reply.code(404).send({ error: 'Not found' })
+    const finalAssignee = body.data.assignedUserId !== undefined ? body.data.assignedUserId || null : existing.assignedUserId
+    if (body.data.assignExpiresAt && !finalAssignee) {
+      return reply.code(400).send({ error: 'assignExpiresAt needs an assignee' })
+    }
 
     const patch: Record<string, unknown> = {}
     if (body.data.code !== undefined) patch.code = body.data.code.trim()
@@ -170,6 +177,9 @@ export async function adminRoutes(app: FastifyInstance) {
     if (body.data.contentType !== undefined) patch.contentType = body.data.contentType
     if (body.data.status !== undefined) patch.status = body.data.status
     if (body.data.assignedUserId !== undefined) patch.assignedUserId = body.data.assignedUserId || null
+    if (body.data.assignExpiresAt !== undefined) patch.assignExpiresAt = body.data.assignExpiresAt
+    // Clearing the assignee clears its expiry.
+    if (!finalAssignee) patch.assignExpiresAt = null
     // Sending an item back to DRAFT (soft-archive) also cancels a pending timed release,
     // otherwise the release scheduler would put it straight back in the queue.
     if (body.data.status === 'DRAFT' && existing.status !== 'DRAFT') patch.releaseAt = null

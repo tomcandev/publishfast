@@ -77,7 +77,7 @@ Items the caller is allowed to see — already scoped, no client-side filtering 
 Returns the item with its `assets` and `publications`. `404` if the caller may not see it.
 
 Every content item returned to a session or a poster token also carries `publishAt`, `releaseAt`,
-`meta`, `source`, and who holds the claim: `claimedVia` (`"token"`, `"session"` or `null`),
+`assignExpiresAt`, `meta`, `source`, and who holds the claim: `claimedVia` (`"token"`, `"session"` or `null`),
 `claimedByTokenName`, and — for a poster-token request — `claimedByThisToken`.
 
 A user with `assignedOnly` never sees the open queue: the list, `stats`, `claim-next` and asset routes
@@ -190,6 +190,9 @@ Bearer token (or an admin session). For comprehensive workflows, Python/Node.js 
 * `status`: defaults to `DRAFT`; use `READY` to put it straight into the queue.
 * `assignedUserId`: optional — a user id or a username. When set, only that specific KOL can see and claim the post. When omitted, it goes to the open queue. Unknown → `400`.
 * `releaseAt` (ISO 8601): a `DRAFT` with `releaseAt` is put in the queue by the server when the time comes.
+* `assignExpiresAt` (ISO 8601, needs `assignedUserId`, `400` otherwise): the assignment ends then. See
+  [Expiring assignments](#expiring-assignments). An `ingest`-scope token with an assignee list may not set it
+  (`400`): its items stay with its assignees.
 * `publishAt` (ISO 8601): when the post should go public on its platform; shown to the poster.
 * `meta`: a JSON object ≤ 64 KB, free-form per platform (e.g. `meta.youtube.title`, `description`, `tags`).
 * `source`: ≤ 200 chars, where it came from (e.g. `nhi#12`).
@@ -290,7 +293,7 @@ curl -sS -X POST $BASE/api/ingest/contents/$ID/assets \
 | route | purpose |
 |---|---|
 | `GET/POST /api/admin/users` · `PATCH /api/admin/users/:id` | manage accounts (`PATCH` also takes `assignedOnly`) |
-| `GET /api/admin/contents` · `PATCH`/`DELETE /api/admin/contents/:id` | manage content |
+| `GET /api/admin/contents` · `PATCH`/`DELETE /api/admin/contents/:id` | manage content (`PATCH` also takes `assignExpiresAt`: an ISO time or `null`; it needs an assignee, `400` otherwise; setting `assignedUserId` to `null` clears it) |
 | `DELETE /api/admin/assets/:id` | remove a file |
 | `GET /api/admin/publications` | all recorded links |
 | `GET/POST /api/admin/tokens` · `DELETE /api/admin/tokens/:id` | API tokens (unscoped, as before; the list also shows `scope`, `expiresAt`, `revokedAt`) |
@@ -300,6 +303,22 @@ curl -sS -X POST $BASE/api/ingest/contents/$ID/assets \
 
 Setting an item's status to `DRAFT` through `PATCH /api/admin/contents/:id` or `bulk-status` cancels a
 pending `releaseAt`, so a soft-archived item is not put straight back in the queue.
+
+### Expiring assignments
+
+An item assigned to a posting account (for a clean experiment) can carry `assignExpiresAt`, so it never gets
+stuck on an account that is not posting. Every 60 seconds the scheduler runs one compare-and-swap:
+
+```sql
+UPDATE contents SET assigned_user_id = NULL, assign_expires_at = NULL
+WHERE status = 'READY' AND assigned_user_id IS NOT NULL AND claimed_by IS NULL
+  AND assign_expires_at IS NOT NULL AND assign_expires_at <= now
+```
+
+logged as "Release scheduler: N expired assignment(s) returned to the open queue". The item then sits in the
+open queue for anyone (an assigned-only account no longer sees it). It never touches an item without
+`assignExpiresAt` (assigned for ever, e.g. the YouTube accounts' items), nor a claimed, published, draft or
+failed item; a claim that lands first wins. The queue shows the assignee "yours until <time>".
 
 ## Export — for analysis (read token, admin token or admin session)
 
