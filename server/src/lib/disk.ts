@@ -52,8 +52,20 @@ export function reserveInFlight(tokenId: string | null, bytes: number) {
  */
 export async function belowFreeSpaceFloor(dir: string, incoming = 0) {
   if (!(config.minFreeBytes > 0)) return false
+  return (await freeSpace(dir)) - incoming - inFlightTotal < config.minFreeBytes
+}
+
+let freeSpaceProbe: ((dir: string) => Promise<number>) | null = null
+
+async function freeSpace(dir: string) {
+  if (freeSpaceProbe) return freeSpaceProbe(dir)
   const s = await statfs(dir)
-  return Number(s.bavail) * Number(s.bsize) - incoming - inFlightTotal < config.minFreeBytes
+  return Number(s.bavail) * Number(s.bsize)
+}
+
+/** For tests only: report a fixed free space (the real disk is shared with parallel test files). */
+export function _setFreeSpaceProbe(probe: ((dir: string) => Promise<number>) | null) {
+  freeSpaceProbe = probe
 }
 
 /**

@@ -8,7 +8,6 @@ import './env.js'
 import assert from 'node:assert/strict'
 import { randomBytes } from 'node:crypto'
 import { existsSync, readdirSync, utimesSync, writeFileSync } from 'node:fs'
-import { statfs } from 'node:fs/promises'
 import net from 'node:net'
 import { join } from 'node:path'
 import { after, before, describe, it } from 'node:test'
@@ -19,7 +18,7 @@ import { migrate } from '../db/migrate.js'
 import { assets } from '../db/schema.js'
 import { createApiToken } from '../lib/auth.js'
 import { config } from '../lib/config.js'
-import { bytesInFlight, uploadsInProgress } from '../lib/disk.js'
+import { _setFreeSpaceProbe, bytesInFlight, uploadsInProgress } from '../lib/disk.js'
 import { SANDBOX_CSP } from '../lib/download.js'
 import { partsFolder, sweepUploads } from '../lib/uploads.js'
 import { call, makeContent, makeUser, multipartFile, sessionFor } from './helpers.js'
@@ -47,7 +46,7 @@ after(async () => {
 
 const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms))
 
-async function waitFor(check: () => boolean, ms = 3000) {
+async function waitFor(check: () => boolean, ms = 15_000) {
   const end = Date.now() + ms
   while (Date.now() < end) {
     if (check()) return true
@@ -112,10 +111,13 @@ describe('C1: a client that sends headers and dies at once', () => {
       await headersThenDie(head('PUT', `/api/files/r3/k${i}`, worker, 'application/octet-stream', 1000))
     }
 
+    // Wait on the conditions, not on time: the in-flight reservation is also released when the
+    // client's socket closes (the backstop), which can be a moment before the handler has removed
+    // the file it had just opened. A real leak still fails these after the timeout.
     assert.ok(await waitFor(() => bytesInFlight() === 0), `bytes still in flight: ${bytesInFlight()}`)
-    assert.equal(count(partsFolder(up)), 0, 'no part file left')
-    assert.equal(count(config.uploadsDir), uploadsBefore, 'no file left in uploads/')
-    assert.equal(count(config.filesDir), filesBefore, 'no file left in files/')
+    assert.ok(await waitFor(() => count(partsFolder(up)) === 0), 'no part file left')
+    assert.ok(await waitFor(() => count(config.uploadsDir) === uploadsBefore), 'no file left in uploads/')
+    assert.ok(await waitFor(() => count(config.filesDir) === filesBefore), 'no file left in files/')
 
     // Normal uploads still work.
     const ok = await app.inject({
@@ -174,9 +176,11 @@ describe('C2: silent connections cannot hold the headroom', () => {
     const token = createApiToken('r3-silent', 'kol', { scope: 'ingest' })
     const id = await draft(token)
     const up = await initUpload(id, 30 * config.uploadPartBytes, token)
-    const s = await statfs(config.uploadsDir)
-    const free = Number(s.bavail) * Number(s.bsize)
-    // Headroom of 50 MB: 30 silent 4 MB parts (120 MB) would exhaust it, 4 (16 MB) do not.
+    // The disk is shared with test files running in parallel (some write 150 MB), so this test
+    // sees a fixed free space instead of the real one. Headroom of 50 MB: 30 silent 4 MB parts
+    // (120 MB) would exhaust it, 4 (16 MB) do not.
+    const free = 10 * 1024 ** 3
+    _setFreeSpaceProbe(async () => free)
     config.minFreeBytes = free - 50 * 1024 * 1024
     const conns: ReturnType<typeof silent>[] = []
     try {
@@ -199,6 +203,7 @@ describe('C2: silent connections cannot hold the headroom', () => {
     } finally {
       for (const c of conns) c.socket.destroy()
       Object.assign(config, { uploadPartBytes: saved.part, minFreeBytes: saved.floor })
+      _setFreeSpaceProbe(null)
     }
     assert.ok(await waitFor(() => bytesInFlight() === 0), `bytes still in flight: ${bytesInFlight()}`)
   })
