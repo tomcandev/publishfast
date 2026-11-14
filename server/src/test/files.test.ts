@@ -77,7 +77,7 @@ describe('drop box', () => {
       assert.equal(dl.statusCode, 200)
       assert.equal(sha(dl.rawPayload), sha(body))
       assert.equal(dl.headers['x-sha256'], sha(body))
-      assert.equal(dl.headers['content-type'], 'application/zip')
+      assert.equal(dl.headers['content-type'], 'application/octet-stream', 'drop-box files are always inert attachments')
       const head = await get('nhi/voice/issue-12.zip', token, 'HEAD')
       assert.equal(head.statusCode, 200)
       assert.equal(head.headers['content-length'], String(body.length))

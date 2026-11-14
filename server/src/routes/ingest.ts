@@ -9,6 +9,7 @@ import { z } from 'zod'
 import { db } from '../db/index.js'
 import { CONTENT_TYPES, assets, contents, users, type Content } from '../db/schema.js'
 import { config } from '../lib/config.js'
+import { isActiveContent } from '../lib/download.js'
 import { META_MAX_BYTES, isoTime, jsonObject } from '../lib/fields.js'
 import { requireIngest } from '../lib/guards.js'
 
@@ -261,6 +262,14 @@ export async function ingestRoutes(app: FastifyInstance) {
 
     try {
       for await (const part of req.files()) {
+        // Scoped tokens may never store something a browser could run (svg, html, xml…).
+        // Old admin tokens still may; such files are only ever served as attachments.
+        if (req.apiToken?.scope && isActiveContent(part.mimetype || '', part.filename || '')) {
+          part.file.resume()
+          throw Object.assign(new Error('This file type is not accepted (svg, html and xml are refused)'), {
+            statusCode: 400,
+          })
+        }
         const ext = extname(part.filename || '').slice(0, 12) || ''
         const stored = `${randomUUID()}${ext}`
         const abs = join(config.uploadsDir, stored)

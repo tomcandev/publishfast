@@ -7,6 +7,7 @@ import { db } from '../db/index.js'
 import { assets, contents, type User } from '../db/schema.js'
 import { claimableBy } from '../lib/claim.js'
 import { config } from '../lib/config.js'
+import { SANDBOX_CSP, contentDisposition, sendFileHeaders } from '../lib/download.js'
 import { requireUser } from '../lib/guards.js'
 
 /** Same visibility rule as the contents routes, applied to media. */
@@ -58,11 +59,13 @@ export async function assetRoutes(app: FastifyInstance) {
       const abs = safeUploadPath(asset.filePath)
       if (!abs || !existsSync(abs)) return reply.code(404).send({ error: 'File no longer exists on server' })
 
-      const filename = basename(asset.originalName).replace(/["\\]/g, '')
-      reply
-        .header('Content-Type', asset.mime)
-        .header('Content-Length', String(asset.size))
-        .header('Content-Disposition', `${disposition}; filename="${filename}"`)
+      // Safe list only inline; anything else (svg, html, …) is an inert attachment.
+      sendFileHeaders(reply, {
+        mime: asset.mime,
+        filename: basename(asset.originalName),
+        size: asset.size,
+        inline: disposition === 'inline',
+      })
       return reply.send(createReadStream(abs))
     })
   }
@@ -85,7 +88,9 @@ export async function assetRoutes(app: FastifyInstance) {
     const archive = archiver('zip', { zlib: { level: 0 } }) // media is already compressed
     reply
       .header('Content-Type', 'application/zip')
-      .header('Content-Disposition', `attachment; filename="${content.code}.zip"`)
+      .header('Content-Disposition', contentDisposition('attachment', `${content.code}.zip`))
+      .header('X-Content-Type-Options', 'nosniff')
+      .header('Content-Security-Policy', SANDBOX_CSP)
 
     archive.on('warning', (err) => app.log.warn({ err }, 'zip warning'))
     archive.on('error', (err) => {

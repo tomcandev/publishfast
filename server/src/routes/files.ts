@@ -7,6 +7,7 @@ import { and, asc, eq, gt, sql } from 'drizzle-orm'
 import { db } from '../db/index.js'
 import { files, type StoredFile } from '../db/schema.js'
 import { config } from '../lib/config.js'
+import { sendFileHeaders } from '../lib/download.js'
 import { isValidFileKey, removeStoredFile, storedFilePath } from '../lib/files.js'
 import { requireFileToken } from '../lib/guards.js'
 
@@ -56,12 +57,8 @@ function liveFile(req: FastifyRequest, key: string) {
 }
 
 function fileHeaders(reply: FastifyReply, row: StoredFile) {
-  const name = row.key.split('/').pop()!
-  return reply
-    .header('Content-Type', row.mime)
-    .header('Content-Length', String(row.size))
-    .header('Content-Disposition', `attachment; filename="${name}"`)
-    .header('X-Content-Type-Options', 'nosniff')
+  // Always an attachment, nosniff and a sandbox CSP (lib/download.ts).
+  return sendFileHeaders(reply, { mime: row.mime, filename: row.key.split('/').pop()!, size: row.size })
     .header('X-Sha256', row.sha256)
     .header('X-Expires-At', row.expiresAt)
 }
