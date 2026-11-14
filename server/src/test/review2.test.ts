@@ -248,7 +248,8 @@ describe('S1: inline media can play in a tab; script still cannot run', () => {
     const cookie = await sessionFor(makeUser('r2-admin', 'admin').id)
     const res = await call(app, 'GET', `/api/assets/${a.id}`, { cookie })
     const csp = String(res.headers['content-security-policy'])
-    assert.equal(csp, "sandbox; default-src 'none'; img-src 'self'; media-src 'self'")
+    // Third review: allow-same-origin added so the video plays in a tab; still no script.
+    assert.equal(csp, "sandbox allow-same-origin; default-src 'none'; img-src 'self'; media-src 'self'")
     assert.ok(!/allow-scripts|script-src/.test(csp), 'no script source is allowed')
   })
 })

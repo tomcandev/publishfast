@@ -20,8 +20,12 @@ export const INLINE_TYPES = new Set([
   'video/webm',
 ])
 
-/** No script, ever; same-origin images and media may load so a video opened in a tab still plays. */
-export const SANDBOX_CSP = "sandbox; default-src 'none'; img-src 'self'; media-src 'self'"
+/**
+ * No script, ever (no allow-scripts, no script source). allow-same-origin and
+ * same-origin images and media let a video opened in a tab play; html bytes
+ * served under it still run nothing.
+ */
+export const SANDBOX_CSP = "sandbox allow-same-origin; default-src 'none'; img-src 'self'; media-src 'self'"
 
 export const IMAGE_EXT: Record<string, string> = {
   '.jpg': 'image/jpeg',
