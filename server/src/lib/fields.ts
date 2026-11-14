@@ -21,14 +21,29 @@ export function jsonObject(maxBytes: number, field: string) {
 export const META_MAX_BYTES = 64 * 1024
 export const EXTRA_MAX_BYTES = 16 * 1024
 
-/** Text made safe to store and show: no control or direction characters, whitespace collapsed, trimmed, capped. */
+/** Control characters: become a space. */
+const CONTROL = /[\u0000-\u001f\u007f-\u009f]/g
+/**
+ * Invisible, direction, filler and tag characters: removed. Soft hyphen,
+ * combining grapheme joiner, Arabic letter mark, Hangul fillers, Mongolian
+ * vowel separator, zero width space, LRM/RLM, embeddings and overrides, word
+ * joiner, invisible operators, isolates and deprecated format characters,
+ * BOM, halfwidth filler, interlinear annotation, tag characters. The zero
+ * width joiner and non-joiner stay (emoji and scripts need them).
+ */
+const INVISIBLE =
+  /[\u00ad\u034f\u061c\u115f\u1160\u180e\u200b\u200e\u200f\u202a-\u202e\u2060-\u206f\u3164\ufeff\uffa0\ufff9-\ufffb\u{e0000}-\u{e007f}]/gu
+
+/**
+ * Text made safe to store and show: control characters become spaces,
+ * invisible ones go, whitespace is collapsed, then at most `max` characters
+ * (code points: never cut inside a surrogate pair).
+ */
 export function cleanText(v: unknown, max = 200) {
   if (typeof v !== 'string') return ''
-  return v
-    .replace(/[\u0000-\u001f\u007f-\u009f\u200b\u200e\u200f\u202a-\u202e\u2066-\u2069\ufeff]/g, ' ')
-    .replace(/\s+/g, ' ')
-    .trim()
-    .slice(0, max)
+  const text = v.replace(CONTROL, ' ').replace(INVISIBLE, '').replace(/\s+/g, ' ').trim()
+  const points = Array.from(text)
+  return points.length > max ? points.slice(0, max).join('').trimEnd() : text
 }
 
 /** The first non-empty line of a caption, cleaned, at most 200 characters; '' when there is none. */

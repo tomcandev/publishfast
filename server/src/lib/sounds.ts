@@ -20,6 +20,7 @@ const DAY_MS = 86_400_000
  * what TikTok says now. Status and note (the admin's) are never touched.
  */
 export function upsertSound(sound: ParsedSound, seenAt: string) {
+  _clearRankingCache()
   db.insert(sounds)
     .values({
       id: sound.id,
@@ -67,23 +68,33 @@ export function recordSighting(
   return sqlite
     .transaction(() => {
       upsertSound(parsed.sound, nowIso)
+      const existing = db
+        .select({ id: soundSightings.id, source: soundSightings.source })
+        .from(soundSightings)
+        .where(eq(soundSightings.videoUrl, videoUrl))
+        .get()
+      // A person's paste (manual) never overwrites what a trend or viral report said about the video.
+      const keepListing = !!existing && input.source === 'manual' && existing.source !== 'manual'
       const fields = {
         soundId: parsed.sound.id,
         videoAuthor: parsed.author,
         plays: parsed.plays,
         likes: parsed.likes,
         postedAt: parsed.postedAt,
-        source: input.source,
         seenAt: nowIso,
-        ...(input.region !== undefined ? { region: input.region } : {}),
-        ...(input.rank !== undefined ? { rank: input.rank } : {}),
+        ...(keepListing
+          ? {}
+          : {
+              source: input.source,
+              ...(input.region !== undefined ? { region: input.region } : {}),
+              ...(input.rank !== undefined ? { rank: input.rank } : {}),
+            }),
       }
-      const existing = db.select({ id: soundSightings.id }).from(soundSightings).where(eq(soundSightings.videoUrl, videoUrl)).get()
       if (existing) {
         db.update(soundSightings).set(fields).where(eq(soundSightings.id, existing.id)).run()
         return 'known' as const
       }
-      db.insert(soundSightings).values({ id: randomUUID(), videoUrl, tokenId, ...fields }).run()
+      db.insert(soundSightings).values({ id: randomUUID(), videoUrl, tokenId, source: input.source, ...fields }).run()
       return 'recorded' as const
     })
     .immediate()
@@ -201,33 +212,52 @@ export function rankSounds(opts: { windowDays: number; limit: number; includeHid
   const viewsByAccount = new Map<string, number[]>()
   for (const p of pubs) {
     const key = `${p.userId}|${p.platform}`
-    viewsByAccount.set(key, [...(viewsByAccount.get(key) ?? []), p.views])
+    const list = viewsByAccount.get(key)
+    if (list) list.push(p.views)
+    else viewsByAccount.set(key, [p.views])
   }
-  const accountMedian = new Map([...viewsByAccount].map(([k, v]) => [k, median(v) ?? 0]))
+  const accountMedian = new Map<string, number>()
+  for (const [k, v] of viewsByAccount) accountMedian.set(k, median(v) ?? 0)
   const oursBySound = new Map<string, { posts: number; ratios: number[] }>()
   for (const p of pubs) {
     if (!p.soundId) continue
-    const entry = oursBySound.get(p.soundId) ?? { posts: 0, ratios: [] }
+    let entry = oursBySound.get(p.soundId)
+    if (!entry) oursBySound.set(p.soundId, (entry = { posts: 0, ratios: [] }))
     entry.posts++
     const m = accountMedian.get(`${p.userId}|${p.platform}`) ?? 0
     if (m > 0) entry.ratios.push(p.views / m)
-    oursBySound.set(p.soundId, entry)
   }
 
-  const sightingsBySound = new Map<string, (typeof soundSightings.$inferSelect)[]>()
-  for (const s of db.select().from(soundSightings).all()) {
-    sightingsBySound.set(s.soundId, [...(sightingsBySound.get(s.soundId) ?? []), s])
+  // One pass over the sightings: per sound, count, best plays, best rank, sources, newest and best example.
+  type Seen = {
+    count: number
+    bestPlays: number
+    bestRank: number | null
+    sources: Set<string>
+    newest: { seenAt: string; videoUrl: string } | null
+    best: { plays: number; seenAt: string; videoUrl: string; rawPlays: number | null } | null
+  }
+  const seenBySound = new Map<string, Seen>()
+  for (const x of db.select().from(soundSightings).all()) {
+    let e = seenBySound.get(x.soundId)
+    if (!e) seenBySound.set(x.soundId, (e = { count: 0, bestPlays: 0, bestRank: null, sources: new Set(), newest: null, best: null }))
+    e.count++
+    const plays = x.plays ?? 0
+    if (plays > e.bestPlays) e.bestPlays = plays
+    if (typeof x.rank === 'number' && x.rank > 0 && (e.bestRank === null || x.rank < e.bestRank)) e.bestRank = x.rank
+    e.sources.add(x.source)
+    if (!e.newest || x.seenAt > e.newest.seenAt) e.newest = { seenAt: x.seenAt, videoUrl: x.videoUrl }
+    if (!e.best || plays > e.best.plays || (plays === e.best.plays && x.seenAt > e.best.seenAt)) {
+      e.best = { plays, seenAt: x.seenAt, videoUrl: x.videoUrl, rawPlays: x.plays }
+    }
   }
 
   const ranked = bank.map((s): RankedSound & { rawScore: number } => {
     const ours = oursBySound.get(s.id) ?? { posts: 0, ratios: [] }
-    const seen = sightingsBySound.get(s.id) ?? []
+    const seen = seenBySound.get(s.id)
     const ourMedianRatio = median(ours.ratios)
-    const bestPlays = Math.max(0, ...seen.map((x) => x.plays ?? 0))
-    const ranks = seen.map((x) => x.rank).filter((r): r is number => typeof r === 'number' && r > 0)
-    const bestRank = ranks.length ? Math.min(...ranks) : null
-    const newest = [...seen].sort((a, b) => b.seenAt.localeCompare(a.seenAt))[0]
-    const best = [...seen].sort((a, b) => (b.plays ?? 0) - (a.plays ?? 0) || b.seenAt.localeCompare(a.seenAt))[0]
+    const bestPlays = seen?.bestPlays ?? 0
+    const bestRank = seen?.bestRank ?? null
     const rawScore = soundScore({ ourMedianRatio, ourPosts: ours.posts, bestPlays, bestRank, lastSeenAt: s.lastSeenAt, now })
     return {
       id: s.id,
@@ -240,13 +270,13 @@ export function rankSounds(opts: { windowDays: number; limit: number; includeHid
       ...(opts.withNotes ? { note: s.note } : {}),
       ours: { posts: ours.posts, medianRatio: ourMedianRatio === null ? null : round(ourMedianRatio, 2), enough: ours.posts >= ENOUGH_OWN_POSTS },
       sightings: {
-        count: seen.length,
+        count: seen?.count ?? 0,
         bestPlays,
         bestRank,
-        sources: [...new Set(seen.map((x) => x.source))].sort(),
-        newestVideoUrl: newest?.videoUrl ?? null,
-        bestVideoUrl: best?.videoUrl ?? null,
-        bestVideoPlays: best?.plays ?? null,
+        sources: seen ? [...seen.sources].sort() : [],
+        newestVideoUrl: seen?.newest?.videoUrl ?? null,
+        bestVideoUrl: seen?.best?.videoUrl ?? null,
+        bestVideoPlays: seen?.best?.rawPlays ?? null,
       },
       score: round(rawScore, 3),
       lastSeenAt: s.lastSeenAt,
@@ -257,24 +287,102 @@ export function rankSounds(opts: { windowDays: number; limit: number; includeHid
   return ranked.slice(0, opts.limit).map(({ rawScore: _raw, ...row }) => row)
 }
 
+/* ---------- the ranking, cached for the route ---------- */
+
+/** GET /api/sounds is on every claimed-post screen: the ranking is kept this long per window. */
+export const RANKING_CACHE_MS = 60_000
+const rankingCache = new Map<string, { at: number; rows: RankedSound[] }>()
+
+/** Any change to the bank clears it (upsertSound, recordSighting, the admin PATCH). */
+export function _clearRankingCache() {
+  rankingCache.clear()
+}
+
+/**
+ * The ranking as the route serves it: computed at most once a minute per
+ * window (and hidden-or-not), notes stripped unless asked for, then cut to `limit`.
+ */
+export function rankSoundsCached(opts: { windowDays: number; limit: number; includeHidden?: boolean; withNotes?: boolean }, now = Date.now()) {
+  const key = `${opts.windowDays}|${opts.includeHidden ? 1 : 0}`
+  let entry = rankingCache.get(key)
+  if (!entry || now - entry.at >= RANKING_CACHE_MS || now < entry.at) {
+    entry = {
+      at: now,
+      rows: rankSounds({ windowDays: opts.windowDays, limit: Number.MAX_SAFE_INTEGER, includeHidden: opts.includeHidden, withNotes: true, now: new Date(now) }),
+    }
+    rankingCache.set(key, entry)
+  }
+  const rows = entry.rows.slice(0, opts.limit)
+  return opts.withNotes ? rows : rows.map(({ note: _note, ...row }) => row)
+}
+
 /* ---------- limits on server-side fetches ---------- */
 
-/** At most this many TikTok page reads at once for the sounds routes, across the process. */
+/**
+ * At most this many TikTok page reads at once for the sounds routes, across
+ * the process; one of them is kept for people (a paste never waits behind a
+ * scout call's dead links).
+ */
 export const MAX_CONCURRENT_READS = 4
 let active = 0
-const waiting: (() => void)[] = []
+let activeMachine = 0
+const waiting: { person: boolean; start: () => void }[] = []
 
-export async function withReadSlot<T>(fn: () => Promise<T>): Promise<T> {
-  // A finishing read hands its slot straight to the next waiter, so `active` never overshoots.
-  if (active < MAX_CONCURRENT_READS) active++
-  else await new Promise<void>((resolve) => waiting.push(resolve))
+const canStart = (person: boolean) => active < MAX_CONCURRENT_READS && (person || activeMachine < MAX_CONCURRENT_READS - 1)
+
+function take(person: boolean) {
+  active++
+  if (!person) activeMachine++
+}
+
+function pump() {
+  for (let i = 0; i < waiting.length; ) {
+    const w = waiting[i]!
+    if (canStart(w.person)) {
+      waiting.splice(i, 1)
+      take(w.person)
+      w.start()
+    } else i++
+  }
+}
+
+/** Runs `fn` in a read slot. `person`: a signed-in person's paste (may use the reserved slot). */
+export async function withReadSlot<T>(fn: () => Promise<T>, person = false): Promise<T> {
+  if (canStart(person)) take(person)
+  else await new Promise<void>((start) => waiting.push({ person, start }))
   try {
     return await fn()
   } finally {
-    const next = waiting.shift()
-    if (next) next()
-    else active--
+    active--
+    if (!person) activeMachine--
+    pump()
   }
+}
+
+/** A person may paste this many links a day (UTC). */
+export const DAILY_PASTES = 30
+/** A sounds token may report this many links a day (UTC). */
+export const DAILY_SIGHTINGS = 600
+const dailyUse = new Map<string, { day: string; used: number }>()
+
+const today = () => new Date().toISOString().slice(0, 10)
+
+/** Takes `n` from the caller's daily allowance; refuses (and takes nothing) when it would go over `cap`. */
+export function takeDaily(key: string, n: number, cap: number): { ok: true } | { ok: false; remaining: number } {
+  const day = today()
+  let e = dailyUse.get(key)
+  if (!e || e.day !== day) dailyUse.set(key, (e = { day, used: 0 }))
+  if (e.used + n > cap) return { ok: false, remaining: Math.max(0, cap - e.used) }
+  e.used += n
+  return { ok: true }
+}
+
+/** Tests only. */
+export function _useDaily(key: string, n: number) {
+  dailyUse.set(key, { day: today(), used: n })
+}
+export function _resetDailyCaps() {
+  dailyUse.clear()
 }
 
 /** One sightings or from-link request at a time per caller (token id or user id). */

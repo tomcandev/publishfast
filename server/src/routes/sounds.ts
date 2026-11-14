@@ -4,7 +4,18 @@ import { z } from 'zod'
 import { db } from '../db/index.js'
 import { SOUND_SOURCES, SOUND_STATUSES, sounds } from '../db/schema.js'
 import { requireAdmin, requireSessionOrAdminToken, requireSoundsReader, requireSoundsWriter } from '../lib/guards.js'
-import { isOurVideo, rankSounds, recordSighting, takeCaller, withReadSlot, type SightingInput } from '../lib/sounds.js'
+import {
+  DAILY_PASTES,
+  DAILY_SIGHTINGS,
+  _clearRankingCache,
+  isOurVideo,
+  rankSoundsCached,
+  recordSighting,
+  takeCaller,
+  takeDaily,
+  withReadSlot,
+  type SightingInput,
+} from '../lib/sounds.js'
 import { TikTokFetchError, allowedTikTokUrl, copyText, fetchTikTokPage, parseTikTokVideoPage } from '../lib/tiktok.js'
 
 /**
@@ -58,8 +69,17 @@ export type SightingResult = {
   reason?: string
 }
 
-/** Reads one video link and records its sound. Never throws. */
-async function readSighting(input: SightingInput & { videoUrl: string }, tokenId: string | null, deadline: number): Promise<SightingResult> {
+/**
+ * Reads one video link and records its sound. Never throws. `admin`: only an
+ * admin learns that a video is one of our own posts. `person`: a person's
+ * paste, which may use the read slot kept for people.
+ */
+async function readSighting(
+  input: SightingInput & { videoUrl: string },
+  tokenId: string | null,
+  deadline: number,
+  who: { admin: boolean; person: boolean },
+): Promise<SightingResult> {
   const base = { videoUrl: input.videoUrl }
   if (!allowedTikTokUrl(input.videoUrl)) return { ...base, status: 'unreadable', reason: 'refused' }
   return withReadSlot(async (): Promise<SightingResult> => {
@@ -74,10 +94,12 @@ async function readSighting(input: SightingInput & { videoUrl: string }, tokenId
     const parsed = parseTikTokVideoPage(page.body)
     if (!parsed?.sound) return { ...base, status: 'unreadable', reason: 'no_sound' }
     // A sighting is a video outside our own posts; ours get their sound from the sync.
-    if (isOurVideo(parsed.videoId)) return { ...base, status: 'known', soundId: parsed.sound.id, reason: 'our_post' }
+    if (isOurVideo(parsed.videoId)) {
+      return { ...base, status: 'known', soundId: parsed.sound.id, ...(who.admin ? { reason: 'our_post' } : {}) }
+    }
     const status = recordSighting({ ...parsed, sound: parsed.sound }, page.url, input, tokenId)
     return { ...base, status, soundId: parsed.sound.id }
-  })
+  }, who.person)
 }
 
 function callerKey(req: FastifyRequest) {
@@ -88,6 +110,12 @@ const BUSY = { error: 'A sound read for this caller is already running; try agai
 
 const isAdmin = (req: FastifyRequest) => req.tokenRole === 'admin' || (req.user?.role === 'admin' && !req.apiToken)
 
+const dailyLimit = (cap: number, remaining: number, what: string) => ({
+  error: `At most ${cap} ${what} a day; ${remaining} left today`,
+  reason: 'daily_limit',
+  remaining,
+})
+
 export async function soundRoutes(app: FastifyInstance) {
   /** A trend scout reports videos it saw; the server reads each page itself. */
   app.post('/api/sounds/sightings', { preHandler: requireSoundsWriter }, async (req, reply) => {
@@ -96,9 +124,15 @@ export async function soundRoutes(app: FastifyInstance) {
     const release = takeCaller(callerKey(req))
     if (!release) return reply.code(429).send(BUSY)
     try {
+      // A sounds token reports at most DAILY_SIGHTINGS links a day; a call that would go over is refused whole.
+      if (req.apiToken?.scope === 'sounds') {
+        const allowance = takeDaily(callerKey(req), parsed.data.items.length, DAILY_SIGHTINGS)
+        if (!allowance.ok) return reply.code(429).send(dailyLimit(DAILY_SIGHTINGS, allowance.remaining, 'links'))
+      }
       const deadline = Date.now() + SIGHTINGS_BUDGET_MS
       const tokenId = req.apiToken?.id ?? null
-      const results = await Promise.all(parsed.data.items.map((item) => readSighting(item, tokenId, deadline)))
+      const who = { admin: isAdmin(req), person: false }
+      const results = await Promise.all(parsed.data.items.map((item) => readSighting(item, tokenId, deadline, who)))
       return { results }
     } finally {
       release()
@@ -118,10 +152,17 @@ export async function soundRoutes(app: FastifyInstance) {
     const release = takeCaller(callerKey(req))
     if (!release) return reply.code(429).send(BUSY)
     try {
+      const person = !req.apiToken
+      // A person may paste DAILY_PASTES links a day.
+      if (person) {
+        const allowance = takeDaily(callerKey(req), 1, DAILY_PASTES)
+        if (!allowance.ok) return reply.code(429).send(dailyLimit(DAILY_PASTES, allowance.remaining, 'pasted links'))
+      }
       const result = await readSighting(
         { videoUrl: parsed.data.videoUrl, source: 'manual' },
         req.apiToken?.id ?? null,
         Date.now() + SIGHTINGS_BUDGET_MS,
+        { admin: isAdmin(req), person },
       )
       if (result.status === 'unreadable') {
         return reply.code(422).send({ error: 'Could not read a sound from this link', reason: result.reason })
@@ -147,7 +188,7 @@ export async function soundRoutes(app: FastifyInstance) {
     const windowDays = Number(parsed.data.window)
     return {
       window: windowDays,
-      sounds: rankSounds({
+      sounds: rankSoundsCached({
         windowDays,
         limit: parsed.data.limit,
         includeHidden: admin && parsed.data.hidden === '1',
@@ -165,6 +206,7 @@ export async function soundRoutes(app: FastifyInstance) {
     if (parsed.data.note !== undefined) patch.note = parsed.data.note?.trim() || null
     const result = db.update(sounds).set(patch).where(eq(sounds.id, id)).run()
     if (result.changes === 0) return reply.code(404).send({ error: 'Not found' })
+    _clearRankingCache()
     return { sound: db.select().from(sounds).where(eq(sounds.id, id)).get() }
   })
 }

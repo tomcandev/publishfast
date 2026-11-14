@@ -385,8 +385,10 @@ fetched page and any upstream error text are never returned; failures answer a `
 
 1–50 items; `source` is `trend`, `viral` or `manual`; `region` 2 letters (optional); `rank` 1–1000
 (optional, its place in a trending list). The server reads each page (at most 4 reads at once across the
-server; a call stops starting new reads after 75 s and answers those items `unreadable`/`time_budget`;
-one call at a time per caller, `429 {reason: "busy"}` otherwise) and answers per item:
+server, one of them kept for people's pastes; a call stops starting new reads after 75 s and answers those
+items `unreadable`/`time_budget`; one call at a time per caller, `429 {reason: "busy"}` otherwise; a `sounds`
+token may report 600 links a day (UTC, per server process): a call that would go over is refused whole
+with `429 {reason: "daily_limit", remaining}`) and answers per item:
 
 ```json
 { "results": [ { "videoUrl": "…as sent…", "status": "recorded", "soundId": "7300000000000000201" },
@@ -395,20 +397,22 @@ one call at a time per caller, `429 {reason: "busy"}` otherwise) and answers per
 ```
 
 `known`: the video was already in the bank (its counts, sound and `seen_at` are refreshed, and the
-`source`/`region`/`rank` of this call replace the old ones), or it is one of our own posts
-(`reason: "our_post"`, nothing recorded).
+`source`/`region`/`rank` of this call replace the old ones, except that a later `manual` report never
+replaces a `trend` or `viral` one), or it is one of our own posts (nothing recorded; only an admin caller
+is told `reason: "our_post"`).
 
 ### `POST /api/sounds/from-link` (a signed-in person, or an admin token)
 
 `{ "videoUrl": "…" }` — the "paste a viral video you saw" box: the same read for one link, source
 `manual`. `200 { status: "recorded" | "known", sound: { id, title, author, original, url, copyText } }`;
 `400 {reason: "refused"}` for a link that is not a TikTok video link; `422 {reason}` when no sound could be
-read. Not for tokens other than admin ones.
+read; `429 {reason: "daily_limit"}` after 30 pastes a day per person. Not for tokens other than admin ones.
 
 ### `GET /api/sounds?window=<7|14|30>&limit=<1-200>` (any signed-in person; `sounds`, `read` and admin tokens)
 
 Default `window=14`, `limit=50`. Active sounds, best first (admins may add `hidden=1` to include hidden ones;
-admins also get `note`):
+admins also get `note`). The ranking is computed at most once a minute per window and cleared whenever the
+bank changes:
 
 ```json
 { "window": 14, "sounds": [ {

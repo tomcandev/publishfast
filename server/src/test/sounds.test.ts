@@ -17,10 +17,10 @@ import { eq } from 'drizzle-orm'
 import { buildApp } from '../app.js'
 import { db, sqlite } from '../db/index.js'
 import { migrate } from '../db/migrate.js'
-import { publications, soundSightings, sounds, tokenEvents } from '../db/schema.js'
+import { apiTokens, publications, soundSightings, sounds, tokenEvents } from '../db/schema.js'
 import { createApiToken } from '../lib/auth.js'
 import { syncAllPublicationMetrics } from '../lib/metrics.js'
-import { rankSounds } from '../lib/sounds.js'
+import { DAILY_PASTES, DAILY_SIGHTINGS, _clearRankingCache, _resetDailyCaps, _useDaily, rankSounds, rankSoundsCached } from '../lib/sounds.js'
 import { TIKTOK_HOSTS } from '../lib/tiktok.js'
 import { call, makeContent, makeUser, sessionFor } from './helpers.js'
 
@@ -173,7 +173,12 @@ describe('POST /api/sounds/sightings', () => {
       .run()
     const before = db.select().from(soundSightings).all().length
     const res = await call(app, 'POST', '/api/sounds/sightings', { token: soundsToken }, { items: [{ videoUrl: 'https://www.tiktok.com/@sample.teacher/video/7400000000000000102?x=1', source: 'viral' }] })
-    assert.deepEqual(res.json().results[0], { videoUrl: 'https://www.tiktok.com/@sample.teacher/video/7400000000000000102?x=1', status: 'known', soundId: ORIGINAL_ID, reason: 'our_post' })
+    // Only an admin learns that a video is one of the team's posts; anyone else sees a plain "known".
+    assert.deepEqual(res.json().results[0], { videoUrl: 'https://www.tiktok.com/@sample.teacher/video/7400000000000000102?x=1', status: 'known', soundId: ORIGINAL_ID })
+    const asAdmin = await call(app, 'POST', '/api/sounds/sightings', { token: adminToken }, { items: [{ videoUrl: 'https://www.tiktok.com/@sample.teacher/video/7400000000000000102', source: 'viral' }] })
+    assert.equal(asAdmin.json().results[0].reason, 'our_post')
+    const paste = await call(app, 'POST', '/api/sounds/from-link', { cookie: await sessionFor(kol.id) }, { videoUrl: 'https://www.tiktok.com/@sample.teacher/video/7400000000000000102' })
+    assert.equal(paste.json().reason, undefined)
     assert.equal(db.select().from(soundSightings).all().length, before)
   })
 
@@ -406,5 +411,78 @@ describe('the public-count sync fills the publication’s sound', () => {
     db.update(publications).set({ publishedUrl: NOJSON_URL }).where(eq(publications.id, id)).run()
     await syncAllPublicationMetrics()
     assert.equal(db.select().from(publications).where(eq(publications.id, id)).get()!.soundId, TRACK_ID)
+  })
+})
+
+describe('review 2: limits, sources, the ranking cache', () => {
+  beforeEach(() => _resetDailyCaps())
+
+  it(`a person may paste ${30} links a day; then 429 daily_limit; another person is not affected`, async () => {
+    assert.equal(DAILY_PASTES, 30)
+    const person = makeUser('cap-person')
+    const cookie = await sessionFor(person.id)
+    _useDaily(`user:${person.id}`, DAILY_PASTES - 1)
+    assert.equal((await call(app, 'POST', '/api/sounds/from-link', { cookie }, { videoUrl: TRACK_URL })).statusCode, 200)
+    const over = await call(app, 'POST', '/api/sounds/from-link', { cookie }, { videoUrl: TRACK_URL })
+    assert.equal(over.statusCode, 429)
+    assert.equal(over.json().reason, 'daily_limit')
+    assert.equal((await call(app, 'POST', '/api/sounds/from-link', { cookie: await sessionFor(kol.id) }, { videoUrl: TRACK_URL })).statusCode, 200)
+  })
+
+  it(`a sounds token may report ${600} links a day; a call that would go over is refused whole`, async () => {
+    assert.equal(DAILY_SIGHTINGS, 600)
+    const scout = createApiToken('cap-scout', 'kol', { scope: 'sounds' })
+    const row = db.select().from(apiTokens).where(eq(apiTokens.name, 'cap-scout')).get()!
+    _useDaily(`token:${row.id}`, DAILY_SIGHTINGS - 10)
+    const items = (n: number) => Array.from({ length: n }, () => ({ videoUrl: TRACK_URL, source: 'viral' }))
+    const over = await call(app, 'POST', '/api/sounds/sightings', { token: scout }, { items: items(11) })
+    assert.equal(over.statusCode, 429)
+    assert.equal(over.json().reason, 'daily_limit')
+    assert.equal(over.json().remaining, 10)
+    assert.equal((await call(app, 'POST', '/api/sounds/sightings', { token: scout }, { items: items(10) })).statusCode, 200)
+    assert.equal((await call(app, 'POST', '/api/sounds/sightings', { token: scout }, { items: items(1) })).statusCode, 429)
+  })
+
+  it('a person’s paste does not wait behind a scout call whose links hang (one read slot is kept for people)', async () => {
+    let release!: () => void
+    hold = new Promise<void>((r) => (release = r))
+    const scout = call(app, 'POST', '/api/sounds/sightings', { token: soundsToken }, {
+      items: Array.from({ length: 8 }, (_, i) => ({ videoUrl: `https://www.tiktok.com/slow?i=${i}`, source: 'viral' })),
+    })
+    await new Promise((r) => setTimeout(r, 30))
+    const started = Date.now()
+    const paste = await call(app, 'POST', '/api/sounds/from-link', { cookie: await sessionFor(kol.id) }, { videoUrl: TRACK_URL })
+    assert.equal(paste.statusCode, 200)
+    assert.ok(Date.now() - started < 1000, 'the paste was answered while the scout call still hangs')
+    release()
+    assert.equal((await scout).statusCode, 200)
+    hold = null
+  })
+
+  it('a later manual report keeps a sighting’s trend source, region and rank', async () => {
+    await call(app, 'POST', '/api/sounds/sightings', { token: soundsToken }, { items: [{ videoUrl: TRACK_URL, source: 'trend', region: 'vn', rank: 2 }] })
+    const paste = await call(app, 'POST', '/api/sounds/from-link', { cookie: await sessionFor(kol.id) }, { videoUrl: TRACK_URL })
+    assert.equal(paste.statusCode, 200)
+    const row = db.select().from(soundSightings).where(eq(soundSightings.videoUrl, TRACK_URL)).get()!
+    assert.deepEqual([row.source, row.region, row.rank], ['trend', 'VN', 2])
+    // A new trend or viral report still replaces them.
+    await call(app, 'POST', '/api/sounds/sightings', { token: soundsToken }, { items: [{ videoUrl: TRACK_URL, source: 'viral' }] })
+    assert.equal(db.select().from(soundSightings).where(eq(soundSightings.videoUrl, TRACK_URL)).get()!.source, 'viral')
+  })
+
+  it('the ranking is cached for 60 seconds per window, and cleared when the bank changes', async () => {
+    _clearRankingCache()
+    const cookie = await sessionFor(kol.id)
+    const first = (await call(app, 'GET', '/api/sounds?window=7', { cookie })).json().sounds.length
+    // A row written behind the bank's back (no clearing) is not seen until the cache expires…
+    db.insert(sounds).values({ id: '955555', title: 'Behind', author: 'X', original: false }).run()
+    assert.equal((await call(app, 'GET', '/api/sounds?window=7', { cookie })).json().sounds.length, first)
+    assert.ok(!rankSoundsCached({ windowDays: 7, limit: 200 }).some((x) => x.id === '955555'), 'cached')
+    const later = rankSoundsCached({ windowDays: 7, limit: 200 }, Date.now() + 61_000)
+    assert.ok(later.some((x) => x.id === '955555'), 'after 60 s it is recomputed')
+    assert.ok(rankSounds({ windowDays: 7, limit: 200 }).some((x) => x.id === '955555'), 'rankSounds itself is never cached')
+    // …while a change through the bank clears it at once.
+    await call(app, 'PATCH', '/api/admin/sounds/955555', { cookie: await sessionFor(admin.id) }, { note: 'n' })
+    assert.ok((await call(app, 'GET', '/api/sounds?window=7', { cookie })).json().sounds.some((x: { id: string }) => x.id === '955555'))
   })
 })

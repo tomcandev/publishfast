@@ -82,6 +82,25 @@ describe('the page parser is linear on hostile pages', () => {
   })
 })
 
+describe('cleanText (review 2)', () => {
+  it('removes invisible, direction, filler and tag characters', async () => {
+    const { cleanText } = await import('../lib/fields.js')
+    for (const ch of ['\u061c', '\u2060', '\u00ad', '\u180e', '\u206a', '\u206f', '\u{e0041}', '\u{e007f}', '\u115f', '\u1160', '\u3164', '\uffa0', '\u034f', '\ufff9', '\ufffb', '\u202e', '\u2066']) {
+      assert.equal(cleanText(`a${ch}b`), 'ab', JSON.stringify(ch))
+    }
+    assert.equal(cleanText('a\u0000b\nc'), 'a b c')
+    assert.equal(cleanText('family \u{1f468}\u200d\u{1f469}'), 'family \u{1f468}\u200d\u{1f469}', 'the emoji joiner stays')
+  })
+
+  it('never cuts inside a surrogate pair', async () => {
+    const { cleanText } = await import('../lib/fields.js')
+    const out = cleanText('x' + '😀'.repeat(150), 100)
+    assert.equal([...out].length, 100)
+    assert.ok(!/[\ud800-\udbff]$/.test(out), 'no lone high surrogate at the end')
+    assert.equal(cleanText('😀'.repeat(150)), '😀'.repeat(150))
+  })
+})
+
 describe('copyText and the sound URL', () => {
   it('copyText: "<title> <author>" for a track, "original sound <author>" for an original sound', () => {
     assert.equal(copyText({ title: 'Lofi Study Loop', author: 'Example Band', original: false }), 'Lofi Study Loop Example Band')
