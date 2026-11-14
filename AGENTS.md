@@ -186,13 +186,13 @@ only place that decides it; the auth hook refuses anything else with 403. A new 
 `server/src/test/scopes.test.ts` checks every registered route against that list.
 
 **Server-side fetch rule:** the server must never fetch a URL that came from a caller (a token, a
-person's paste, a saved post link) with a plain `fetch(url)`. Go through a guard like
-`fetchTikTokPage` in `server/src/lib/tiktok.ts`: parse with the URL parser and fetch the parsed href,
-https only, an exact host allow-list, no userinfo, port or IP literal, redirects followed by hand
-(`redirect: 'manual'`, each hop re-checked, a small maximum), one timeout, a body cap, and never the
-fetched body or upstream error text back to the caller. Tests stub `globalThis.fetch`; no test may
-reach the network. (The public-count sync's old YouTube/other-link path in `lib/metrics.ts` predates
-this rule and is kept exactly as it was; do not copy it.)
+person's paste, a saved post link) with a plain `fetch(url)`. Use `guardedFetch(url, hosts)` in
+`server/src/lib/guardedFetch.ts` with an exact host set: it parses with the URL parser and fetches the
+parsed href, https only, no userinfo, port or IP literal, redirects followed by hand (`redirect:
+'manual'`, each hop re-checked against the same set, at most 5), one timeout, a body cap, and never the
+fetched body or upstream error text back to the caller. A link on any other host is not fetched at all.
+Tests stub `globalThis.fetch`; no test may reach the network. Parse untrusted pages in linear time
+(`indexOf`, not a backtracking regex over the whole body).
 
 **Deleting people's files:** media of done posts is removed only by `server/src/lib/prune.ts`, which
 is off unless `PRUNE_PUBLISHED_AFTER_DAYS` is set, touches only `PUBLISHED` items, uses one selection

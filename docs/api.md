@@ -367,9 +367,10 @@ People attach a sound by hand in the TikTok app; the bank tells them which one t
 which ones worked for us. Sounds enter it **only from what the server itself reads on a TikTok video
 page**: callers send video links, never sound names or counts (extra fields are ignored).
 
-**The URL guard** (`server/src/lib/tiktok.ts`, used for every server-side read of a TikTok link,
-including the public-count sync): parsed with the URL parser; `https` only; host exactly
-`www.tiktok.com`, `vt.tiktok.com`, `vm.tiktok.com` or `m.tiktok.com`; no userinfo, no port (a default
+**The URL guard** (`guardedFetch` in `server/src/lib/guardedFetch.ts`, used for every server-side read
+of a link: TikTok pages, the sync's YouTube pages and tikwm): parsed with the URL parser; `https` only;
+host exactly one of the caller's set (TikTok: `www.tiktok.com`, `tiktok.com`, `vt.tiktok.com`,
+`vm.tiktok.com`, `m.tiktok.com`); no userinfo, no port (a default
 `:443` is dropped by the parser), no IP literal; at most 2048 characters. Redirects are followed by hand,
 at most 5, every `Location` re-checked by the same rule. 15 s for the whole read, 3 MB body cap. The
 fetched page and any upstream error text are never returned; failures answer a `reason`:
@@ -441,6 +442,13 @@ score = 3 × clamp(ourMedianRatio, 0, 5) × min(1, ourPosts / 3)
 
 The public-count sync (`POST /api/admin/metrics/sync`, `track-metrics`) fills each TikTok publication's
 `soundId`, `soundTitle`, `soundAuthor`, `soundOriginal` from the page it reads, and adds the sound to the bank.
+
+What the sync reads: it parses each saved link. A TikTok link (an `http://` one is read as `https://`)
+goes through the guard with the TikTok hosts, and tikwm is asked only about a link that passed it, without
+its query string, through the same guard (host `www.tikwm.com`, 15 s, 3 MB). An `https` (or `http`) link on
+`www.youtube.com`, `youtube.com`, `m.youtube.com` or `youtu.be` goes through the guard with those hosts;
+redirects must stay on them. Any other link is **not fetched**: it keeps its counts. A third-party
+shortener (bit.ly …) that points at TikTok or YouTube is no longer followed.
 
 ## Media prune
 

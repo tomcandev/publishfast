@@ -56,6 +56,32 @@ describe('the TikTok page parser', () => {
   })
 })
 
+describe('the page parser is linear on hostile pages', () => {
+  it('3 MB bodies built to make a regex backtrack finish in under a second each', () => {
+    const MB3 = 3 * 1024 * 1024
+    const bodies = [
+      '<script '.repeat(MB3 / 8),
+      '<script id="__UNIVERSAL_DATA_FOR_REHYDRATION__" '.repeat(Math.floor(MB3 / 48)),
+      'id="__UNIVERSAL_DATA_FOR_REHYDRATION__"'.repeat(Math.floor(MB3 / 40)),
+      '<script id="SIGI_STATE">' + '{'.repeat(MB3 - 30),
+      '<script x="'.repeat(MB3 / 11) + 'id="SIGI_STATE">{}</script>',
+    ]
+    for (const html of bodies) {
+      const t = performance.now()
+      parseTikTokVideoPage(html)
+      const ms = performance.now() - t
+      assert.ok(ms < 1000, `${html.slice(0, 20)}… took ${ms.toFixed(0)} ms`)
+    }
+  })
+
+  it('still finds the JSON with single quotes and other attributes around the id', () => {
+    const json = JSON.stringify({ ItemModule: { 1: { id: '1', music: { id: '42', title: 't', authorName: 'a' } } } })
+    assert.equal(parseTikTokVideoPage(`<script type="application/json" id='SIGI_STATE' nonce="x">${json}</script>`)?.sound?.id, '42')
+    // An id outside a script tag is not the script.
+    assert.equal(parseTikTokVideoPage(`<div id="SIGI_STATE">${json}</div>`), null)
+  })
+})
+
 describe('copyText and the sound URL', () => {
   it('copyText: "<title> <author>" for a track, "original sound <author>" for an original sound', () => {
     assert.equal(copyText({ title: 'Lofi Study Loop', author: 'Example Band', original: false }), 'Lofi Study Loop Example Band')
@@ -73,9 +99,10 @@ describe('copyText and the sound URL', () => {
 })
 
 describe('the URL guard', () => {
-  it('allows https links on the four TikTok hosts', () => {
+  it('allows https links on the TikTok hosts (tiktok.com itself included since review 2)', () => {
     for (const ok of [
       'https://www.tiktok.com/@example.creator/video/7400000000000000101',
+      'https://tiktok.com/@example.creator/video/7400000000000000101',
       'https://vt.tiktok.com/ZSabc123/',
       'https://vm.tiktok.com/ZMabc123/',
       'https://m.tiktok.com/v/7400000000000000101.html',
@@ -92,7 +119,6 @@ describe('the URL guard', () => {
   it('refuses other hosts, lookalikes, IP literals, ports, userinfo, other schemes and junk', () => {
     for (const bad of [
       'http://www.tiktok.com/@x/video/1',
-      'https://tiktok.com/@x/video/1',
       'https://www.tiktok.com.evil.example/@x/video/1',
       'https://evil.example/www.tiktok.com/@x',
       'https://evil.tiktok.com/@x/video/1',
@@ -241,6 +267,23 @@ describe('the guarded fetch (network stubbed)', () => {
     const err = await failure(fetchTikTokPage('https://www.tiktok.com/@x/video/1'))
     assert.equal(err.reason, 'unreachable')
     assert.ok(!err.message.includes('internal-detail'))
+  })
+
+  it('the same guard with the YouTube host set: redirects must stay on YouTube', async () => {
+    const { guardedFetch } = await import('../lib/guardedFetch.js')
+    const { YOUTUBE_HOSTS } = await import('../lib/metrics.js')
+    stub((url) => (url === 'https://youtube.com/watch?v=a' ? redirect('https://www.youtube.com/watch?v=a') : new Response('ok')))
+    assert.equal((await guardedFetch('https://youtube.com/watch?v=a', YOUTUBE_HOSTS)).url, 'https://www.youtube.com/watch?v=a')
+    for (const to of ['https://www.tiktok.com/x', 'https://evil.example/', 'http://www.youtube.com/x', 'https://127.0.0.1/']) {
+      stub(() => redirect(to))
+      assert.equal((await failure(guardedFetch('https://youtu.be/x', YOUTUBE_HOSTS))).reason, 'redirect_refused', to)
+      assert.equal(calls.length, 1)
+    }
+    for (const bad of ['https://www.youtube.com.evil.example/', 'https://consent.youtube.com/', 'http://www.youtube.com/']) {
+      stub(() => new Response('no'))
+      assert.equal((await failure(guardedFetch(bad, YOUTUBE_HOSTS))).reason, 'refused', bad)
+      assert.equal(calls.length, 0)
+    }
   })
 
   it('a non-2xx page is returned with its status for the caller to judge', async () => {

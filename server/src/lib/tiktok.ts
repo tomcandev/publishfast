@@ -1,149 +1,39 @@
-import { isIP } from 'node:net'
 import { cleanText } from './fields.js'
+import {
+  FETCH_MAX_BYTES,
+  FETCH_TIMEOUT_MS,
+  GuardedFetchError,
+  MAX_REDIRECTS,
+  allowedUrl,
+  guardedFetch,
+  type FetchFailure,
+  type GuardedPage,
+} from './guardedFetch.js'
 
 /**
  * Server-side reads of TikTok video pages (contract section 13, and the
- * TikTok part of the public-count sync in lib/metrics.ts).
- *
- * The URL comes from a caller (a token, a person's paste, a saved post
- * link), so this is an SSRF surface. Every such fetch goes through
- * fetchTikTokPage(), and every URL it touches, the first one and every
- * redirect, must pass allowedTikTokUrl():
- *   - parsed with the WHATWG URL parser (what fetch itself uses), and the
- *     parsed href is what is fetched, never the raw string;
- *   - https only;
- *   - host exactly www.tiktok.com, vt.tiktok.com, vm.tiktok.com or m.tiktok.com
- *     (so no IP literal, no other subdomain, no lookalike such as
- *     tiktok.com.evil.example, no trailing dot);
- *   - no userinfo, no explicit port (the parser drops a default :443);
- *   - at most 2048 characters.
- * Redirects are followed by hand, at most MAX_REDIRECTS, each Location
- * re-checked by the same rule. One timeout covers the whole read (all hops
- * and the body); the body is capped at FETCH_MAX_BYTES. Callers never get
- * the upstream error text: only a TikTokFetchError reason.
+ * TikTok part of the public-count sync in lib/metrics.ts), through the one
+ * guarded fetch in lib/guardedFetch.ts with the TikTok host set: https only,
+ * host exactly one of TIKTOK_HOSTS, no userinfo, port or IP literal, at most
+ * 5 redirects each re-checked, 15 s, 3 MB, no upstream text to the caller.
  */
 
-export const TIKTOK_HOSTS: ReadonlySet<string> = new Set(['www.tiktok.com', 'vt.tiktok.com', 'vm.tiktok.com', 'm.tiktok.com'])
-export const FETCH_TIMEOUT_MS = 15_000
-export const FETCH_MAX_BYTES = 3 * 1024 * 1024
-export const MAX_REDIRECTS = 5
-const MAX_URL_LENGTH = 2048
-const REDIRECT_STATUSES = new Set([301, 302, 303, 307, 308])
+export const TIKTOK_HOSTS: ReadonlySet<string> = new Set(['www.tiktok.com', 'tiktok.com', 'vt.tiktok.com', 'vm.tiktok.com', 'm.tiktok.com'])
+export { FETCH_MAX_BYTES, FETCH_TIMEOUT_MS, MAX_REDIRECTS }
+export type TikTokFetchFailure = FetchFailure
+export type TikTokPage = GuardedPage
+/** A failed guarded read (the same class for every host set). */
+export const TikTokFetchError = GuardedFetchError
+export type TikTokFetchError = GuardedFetchError
 
-const USER_AGENT =
-  'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/128.0.0.0 Safari/537.36'
-
-export type TikTokFetchFailure = 'refused' | 'redirect_refused' | 'too_many_redirects' | 'too_large' | 'timeout' | 'unreachable'
-
-const FAILURE_TEXT: Record<TikTokFetchFailure, string> = {
-  refused: 'Not a TikTok link this server may read',
-  redirect_refused: 'The link redirected away from TikTok',
-  too_many_redirects: 'Too many redirects',
-  too_large: 'The page was too large',
-  timeout: 'TikTok did not answer in time',
-  unreachable: 'TikTok could not be reached',
-}
-
-/** A failed guarded read. `message` is ours, never upstream text. */
-export class TikTokFetchError extends Error {
-  constructor(readonly reason: TikTokFetchFailure) {
-    super(FAILURE_TEXT[reason])
-    this.name = 'TikTokFetchError'
-  }
-}
-
-/** The URL guard. Returns the parsed URL (fragment dropped) when it may be fetched, else null. */
+/** The URL guard for TikTok. */
 export function allowedTikTokUrl(raw: unknown): URL | null {
-  if (typeof raw !== 'string' || raw.length === 0 || raw.length > MAX_URL_LENGTH) return null
-  let url: URL
-  try {
-    url = new URL(raw)
-  } catch {
-    return null
-  }
-  if (url.protocol !== 'https:') return null
-  if (url.username !== '' || url.password !== '') return null
-  if (url.port !== '') return null
-  const host = url.hostname
-  if (isIP(host.replace(/^\[|\]$/g, '')) !== 0) return null
-  if (!TIKTOK_HOSTS.has(host)) return null
-  url.hash = ''
-  return url
+  return allowedUrl(raw, TIKTOK_HOSTS)
 }
 
-export type TikTokPage = { url: string; status: number; body: string }
-
-async function readCapped(res: Response, maxBytes: number) {
-  const declared = Number(res.headers.get('content-length'))
-  if (Number.isFinite(declared) && declared > maxBytes) {
-    await res.body?.cancel().catch(() => {})
-    throw new TikTokFetchError('too_large')
-  }
-  if (!res.body) return ''
-  const reader = res.body.getReader()
-  const chunks: Uint8Array[] = []
-  let total = 0
-  for (;;) {
-    const { done, value } = await reader.read()
-    if (done) break
-    total += value.byteLength
-    if (total > maxBytes) {
-      await reader.cancel().catch(() => {})
-      throw new TikTokFetchError('too_large')
-    }
-    chunks.push(value)
-  }
-  return Buffer.concat(chunks).toString('utf8')
-}
-
-/**
- * Reads a TikTok page through the guard. Answers the final URL, its HTTP
- * status and its body (whatever the status: callers decide), or throws a
- * TikTokFetchError. Uses globalThis.fetch at call time (tests stub it).
- */
-export async function fetchTikTokPage(
-  raw: string,
-  opts: { timeoutMs?: number; maxBytes?: number; maxRedirects?: number } = {},
-): Promise<TikTokPage> {
-  const maxRedirects = opts.maxRedirects ?? MAX_REDIRECTS
-  let url = allowedTikTokUrl(raw)
-  if (!url) throw new TikTokFetchError('refused')
-  const signal = AbortSignal.timeout(opts.timeoutMs ?? FETCH_TIMEOUT_MS)
-  try {
-    for (let hop = 0; ; hop++) {
-      const res = await globalThis.fetch(url.href, {
-        method: 'GET',
-        redirect: 'manual',
-        signal,
-        headers: {
-          'User-Agent': USER_AGENT,
-          Accept: 'text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8',
-          'Accept-Language': 'en-US,en;q=0.9',
-        },
-      })
-      if (REDIRECT_STATUSES.has(res.status)) {
-        await res.body?.cancel().catch(() => {})
-        if (hop >= maxRedirects) throw new TikTokFetchError('too_many_redirects')
-        const location = res.headers.get('location')
-        let next: URL | null = null
-        if (location) {
-          try {
-            next = allowedTikTokUrl(new URL(location, url).href)
-          } catch {
-            next = null
-          }
-        }
-        if (!next) throw new TikTokFetchError('redirect_refused')
-        url = next
-        continue
-      }
-      return { url: url.href, status: res.status, body: await readCapped(res, opts.maxBytes ?? FETCH_MAX_BYTES) }
-    }
-  } catch (err) {
-    if (err instanceof TikTokFetchError) throw err
-    if (signal.aborted) throw new TikTokFetchError('timeout')
-    throw new TikTokFetchError('unreachable')
-  }
+/** Reads a TikTok page through the guard. */
+export function fetchTikTokPage(raw: string, opts: { timeoutMs?: number; maxBytes?: number; maxRedirects?: number } = {}) {
+  return guardedFetch(raw, TIKTOK_HOSTS, opts)
 }
 
 /* ---------- the video page parser ---------- */
@@ -205,14 +95,35 @@ export function soundOf(music: unknown): ParsedSound | null {
   }
 }
 
+/** How many `id="…"` matches are looked at before giving up (a hostile page could repeat it). */
+const MAX_SCRIPT_TRIES = 8
+
+/**
+ * The JSON of `<script … id="<id>" …>…</script>`, found with indexOf only
+ * (linear time: a regex here was quadratic on a hostile page).
+ */
 function scriptJson(html: string, id: string): unknown {
-  const match = new RegExp(`<script\\b[^>]*\\bid=["']${id}["'][^>]*>([\\s\\S]*?)</script>`, 'i').exec(html)
-  if (!match) return null
-  try {
-    return JSON.parse(match[1]!)
-  } catch {
-    return null
+  for (const q of ['"', "'"]) {
+    const needle = `id=${q}${id}${q}`
+    let at = html.indexOf(needle)
+    for (let tries = 0; at !== -1 && tries < MAX_SCRIPT_TRIES; tries++) {
+      const open = html.lastIndexOf('<script', at)
+      const tagEnd = html.indexOf('>', at + needle.length)
+      // The id must sit inside that <script …> tag: no ">" between "<script" and the id.
+      if (open !== -1 && tagEnd !== -1 && html.indexOf('>', open) > at) {
+        const close = html.indexOf('</script>', tagEnd + 1)
+        if (close === -1) return null
+        try {
+          return JSON.parse(html.slice(tagEnd + 1, close))
+        } catch {
+          return null
+        }
+      }
+      if (tagEnd === -1) return null
+      at = html.indexOf(needle, at + needle.length)
+    }
   }
+  return null
 }
 
 /** The video item of a page: the current format (__UNIVERSAL_DATA_FOR_REHYDRATION__), else the older SIGI_STATE. */

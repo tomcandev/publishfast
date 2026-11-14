@@ -3,7 +3,17 @@ import { eq } from 'drizzle-orm'
 import { db } from '../db/index.js'
 import { contents, metricSnapshots, publications, users } from '../db/schema.js'
 import { upsertSound } from './sounds.js'
-import { TikTokFetchError, fetchTikTokPage, parseTikTokVideoPage, soundOf, type ParsedSound, type TikTokPage } from './tiktok.js'
+import { GuardedFetchError, guardedFetch, upgradeToHttps } from './guardedFetch.js'
+import {
+  TIKTOK_HOSTS,
+  TikTokFetchError,
+  allowedTikTokUrl,
+  fetchTikTokPage,
+  parseTikTokVideoPage,
+  soundOf,
+  type ParsedSound,
+  type TikTokPage,
+} from './tiktok.js'
 
 export interface MetricResult {
   views: number
@@ -92,32 +102,21 @@ export function inferHookId(title?: string | null, caption?: string | null): str
   return 'custom_hook'
 }
 
-/**
- * Resolve short social URLs (e.g. vt.tiktok.com) to final canonical destination
- */
-export async function resolveFinalUrl(rawUrl: string): Promise<string> {
-  try {
-    const res = await fetch(rawUrl, {
-      method: 'GET',
-      redirect: 'follow',
-      headers: {
-        'User-Agent':
-          'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/128.0.0.0 Safari/537.36',
-      },
-    })
-    return res.url || rawUrl
-  } catch {
-    return rawUrl
-  }
-}
+/** YouTube hosts the sync reads (https only, through the guard). */
+export const YOUTUBE_HOSTS: ReadonlySet<string> = new Set(['www.youtube.com', 'youtube.com', 'm.youtube.com', 'youtu.be'])
+const TIKWM_HOSTS: ReadonlySet<string> = new Set(['www.tikwm.com'])
+
+const zeroResult = (): MetricResult => ({ views: 0, likes: 0, comments: 0, shares: 0, error: null })
+const failed = (error: string): MetricResult => ({ views: 0, likes: 0, comments: 0, shares: 0, error })
 
 /**
- * Fetch public video/post metrics across TikTok, YouTube, Instagram
+ * Fetch public video/post metrics for a saved link.
  *
- * A link that names tiktok.com goes to the TikTok reader, which fetches the
- * page only through the URL guard (lib/tiktok.ts). Every other link is
- * handled exactly as before: resolved with redirects followed, then a
- * YouTube link is read.
+ * The link is parsed with the URL parser. A TikTok link (http is read as
+ * https) and an https YouTube link are read only through the guarded fetch
+ * (lib/guardedFetch.ts) with their own host sets; redirects must stay inside
+ * that set. Every other link gets the zero result without any request: a
+ * third-party shortener pointing at TikTok or YouTube is no longer followed.
  */
 export async function fetchSocialMetrics(rawUrl: string, _platform?: string): Promise<MetricResult> {
   const cleanUrl = rawUrl.trim()
@@ -125,86 +124,72 @@ export async function fetchSocialMetrics(rawUrl: string, _platform?: string): Pr
     return { views: 0, likes: 0, comments: 0, shares: 0, error: 'Empty URL' }
   }
 
-  // 1. TikTok Handler (the guarded read resolves short links itself)
-  if (cleanUrl.includes('tiktok.com')) {
-    return fetchTikTokMetrics(cleanUrl)
-  }
+  const tiktok = upgradeToHttps(cleanUrl, TIKTOK_HOSTS)
+  if (tiktok) return fetchTikTokMetrics(tiktok.href)
 
-  const resolved = await resolveFinalUrl(cleanUrl)
+  const youtube = upgradeToHttps(cleanUrl, YOUTUBE_HOSTS)
+  if (youtube) return fetchYouTubeMetrics(youtube.href)
 
-  if (resolved.includes('tiktok.com')) {
-    return fetchTikTokMetrics(resolved)
-  }
+  return zeroResult()
+}
 
-  // 2. YouTube Shorts Handler
-  if (cleanUrl.includes('youtube.com') || cleanUrl.includes('youtu.be') || resolved.includes('youtube.com')) {
-    return fetchYouTubeMetrics(resolved)
-  }
-
-  // 3. Generic fallback
-  return {
-    views: 0,
-    likes: 0,
-    comments: 0,
-    shares: 0,
-    error: null,
+/** tikwm's answer for a guard-passed TikTok URL, query string removed; null when it has nothing. */
+async function readTikwm(target: URL) {
+  const clean = new URL(target.href)
+  clean.search = ''
+  clean.hash = ''
+  try {
+    const page = await guardedFetch(`https://www.tikwm.com/api/?url=${encodeURIComponent(clean.href)}`, TIKWM_HOSTS, {
+      accept: 'application/json',
+    })
+    if (page.status < 200 || page.status >= 300) return null
+    const data = JSON.parse(page.body) as {
+      code?: number
+      data?: {
+        play_count?: number
+        digg_count?: number
+        comment_count?: number
+        share_count?: number
+        music_info?: unknown
+      }
+    }
+    return data && data.code === 0 && data.data ? data.data : null
+  } catch {
+    return null
   }
 }
 
 async function fetchTikTokMetrics(url: string): Promise<MetricResult> {
-  // The video page, through the URL guard: TikTok hosts only, redirects
-  // checked hop by hop, 15 s, 3 MB. It gives the final URL (short links
-  // resolved), the sound, and the counts when tikwm has none.
+  // Only a URL that passed the TikTok guard is fetched, or sent to tikwm.
+  const allowed = allowedTikTokUrl(url)
+  if (!allowed) return failed(new TikTokFetchError('refused').message)
+
+  // The video page, through the guard: TikTok hosts only, redirects checked
+  // hop by hop, 15 s, 3 MB. It gives the final URL (short links resolved),
+  // the sound, and the counts when tikwm has none.
   let page: TikTokPage | null = null
   let pageError = 'TikTok fetch failed'
   try {
-    page = await fetchTikTokPage(url)
+    page = await fetchTikTokPage(allowed.href)
   } catch (err) {
     if (err instanceof TikTokFetchError) pageError = err.message
   }
-  const target = page?.url ?? url
   const fromPage = page ? parseTikTokVideoPage(page.body)?.sound ?? null : null
 
-  try {
-    // 1. Try public tikwm endpoint (supports both video and photo/carousel URLs)
-    const tikwmUrl = `https://www.tikwm.com/api/?url=${encodeURIComponent(target)}`
-    const res = await fetch(tikwmUrl, {
-      headers: {
-        'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/128.0.0.0 Safari/537.36',
-        Accept: 'application/json',
-      },
-      signal: AbortSignal.timeout(10000),
-    })
-
-    if (res.ok) {
-      const data = (await res.json()) as {
-        code?: number
-        data?: {
-          play_count?: number
-          digg_count?: number
-          comment_count?: number
-          share_count?: number
-          music_info?: unknown
-        }
-      }
-      if (data && data.code === 0 && data.data) {
-        return {
-          views: Number(data.data.play_count) || 0,
-          likes: Number(data.data.digg_count) || 0,
-          comments: Number(data.data.comment_count) || 0,
-          shares: Number(data.data.share_count) || 0,
-          error: null,
-          sound: fromPage ?? soundOf(data.data.music_info),
-        }
-      }
+  // 1. The public tikwm endpoint (supports both video and photo/carousel URLs)
+  const tikwm = await readTikwm(new URL(page?.url ?? allowed.href))
+  if (tikwm) {
+    return {
+      views: Number(tikwm.play_count) || 0,
+      likes: Number(tikwm.digg_count) || 0,
+      comments: Number(tikwm.comment_count) || 0,
+      shares: Number(tikwm.share_count) || 0,
+      error: null,
+      sound: fromPage ?? soundOf(tikwm.music_info),
     }
-  } catch {
-    // Fall back to the page if tikwm is temporarily unreachable
   }
 
-  if (!page) {
-    return { views: 0, likes: 0, comments: 0, shares: 0, error: pageError }
-  }
+  if (!page) return failed(pageError)
 
   const html = page.body
 
@@ -237,44 +222,33 @@ async function fetchTikTokMetrics(url: string): Promise<MetricResult> {
 }
 
 async function fetchYouTubeMetrics(url: string): Promise<MetricResult> {
+  let html: string
   try {
-    const res = await fetch(url, {
-      headers: {
-        'User-Agent':
-          'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/128.0.0.0 Safari/537.36',
-      },
-    })
-    const html = await res.text()
-
-    let views = 0
-    let likes = 0
-
-    // Regex for YouTube view count
-    const viewMatch =
-      html.match(/"viewCount":\s*"(\d+)"/) ||
-      html.match(/\\"viewCount\\":\s*\\"(\d+)\\"/) ||
-      html.match(/(\d[\d,.]*)\s+views/i)
-
-    if (viewMatch) {
-      const numStr = viewMatch[1]!.replace(/[,.]/g, '')
-      views = parseInt(numStr, 10) || 0
-    }
-
-    return {
-      views,
-      likes,
-      comments: 0,
-      shares: 0,
-      error: null,
-    }
+    html = (await guardedFetch(url, YOUTUBE_HOSTS)).body
   } catch (err) {
-    return {
-      views: 0,
-      likes: 0,
-      comments: 0,
-      shares: 0,
-      error: err instanceof Error ? err.message : 'YouTube fetch failed',
-    }
+    return failed(err instanceof GuardedFetchError ? err.message : 'YouTube fetch failed')
+  }
+
+  let views = 0
+  const likes = 0
+
+  // Regex for YouTube view count
+  const viewMatch =
+    html.match(/"viewCount":\s*"(\d+)"/) ||
+    html.match(/\\"viewCount\\":\s*\\"(\d+)\\"/) ||
+    html.match(/(\d[\d,.]*)\s+views/i)
+
+  if (viewMatch) {
+    const numStr = viewMatch[1]!.replace(/[,.]/g, '')
+    views = parseInt(numStr, 10) || 0
+  }
+
+  return {
+    views,
+    likes,
+    comments: 0,
+    shares: 0,
+    error: null,
   }
 }
 
