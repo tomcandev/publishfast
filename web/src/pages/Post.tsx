@@ -6,11 +6,14 @@ import {
   api,
   assetDownloadUrl,
   assetUrl,
+  liveAssets,
+  mediaRemovedAt,
   zipUrl,
   type Asset,
   type Content,
   type Platform,
 } from '../lib/api'
+import { TopSounds } from './Sounds'
 
 const PLATFORM_ORDER: Platform[] = ['tiktok', 'instagram', 'youtube_shorts', 'facebook', 'other']
 
@@ -61,12 +64,13 @@ export function Post() {
 
   // Preload media assets immediately into memory so iOS Safari transient user gesture never times out
   useEffect(() => {
-    if (!content?.assets?.length) {
+    // Files removed by the media prune are not downloaded (they answer 410).
+    const assetsList = content?.assets ? liveAssets(content.assets) : []
+    if (!content || assetsList.length === 0) {
       preloadedFilesRef.current = null
       return
     }
     let cancelled = false
-    const assetsList = content.assets
 
     void (async () => {
       try {
@@ -330,8 +334,10 @@ export function Post() {
     )
   }
 
-  const videos = content.assets.filter((a) => a.type === 'video')
-  const images = content.assets.filter((a) => a.type === 'image')
+  const media = liveAssets(content.assets)
+  const removedAt = mediaRemovedAt(content.assets)
+  const videos = media.filter((a) => a.type === 'video')
+  const images = media.filter((a) => a.type === 'image')
   const savedCount = content.publications.filter((p) => p.publishedUrl).length
   const videosTotalSize = videos.reduce((sum, v) => sum + v.size, 0)
   const imagesTotalSize = images.reduce((sum, img) => sum + img.size, 0)
@@ -391,6 +397,14 @@ export function Post() {
 
       <PostingDetails content={content} />
 
+      {removedAt && (
+        <Alert kind="warn">
+          Media removed {new Date(removedAt).toLocaleDateString()}. The post, its links and its numbers are kept.
+        </Alert>
+      )}
+
+      {content.status === 'CLAIMED' && <TopSounds />}
+
       {error && <Snackbar message={error} kind="error" onClose={() => setError(null)} />}
 
       {/* ==================== AUTO MODE (2 STEPS) ==================== */}
@@ -419,7 +433,7 @@ export function Post() {
           </div>
 
           {/* Step 1: 1-Tap Share & Copy */}
-          {content.assets.length > 0 && (
+          {media.length > 0 && (
             <div className="card">
               <div className="step-split">
                 <div className="step-split-left">
@@ -580,7 +594,7 @@ export function Post() {
           </div>
 
           {/* Step 1: Media */}
-          {content.assets.length > 0 && (
+          {media.length > 0 && (
             <div className="card">
               <div className="step-split">
                 <div className="step-split-left">

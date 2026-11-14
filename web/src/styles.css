@@ -1325,3 +1325,27 @@ input:checked + .slider:before {
   .reminder-time-card { padding: 8px 4px; }
   .reminder-time-val { font-size: 0.95rem; }
 }
+
+/* ---------- sounds ---------- */
+.sound-row { align-items: flex-start; }
+.sound-place {
+  flex: none;
+  width: 26px;
+  height: 26px;
+  border-radius: 50%;
+  background: var(--bg);
+  border: 1px solid var(--border);
+  color: var(--text-soft);
+  font-size: 0.8rem;
+  font-weight: 650;
+  display: grid;
+  place-items: center;
+}
+.sound-name { overflow-wrap: anywhere; line-height: 1.35; }
+.sound-actions { gap: 8px; }
+.sound-actions .btn { text-decoration: none; }
+
+/* The top bar's Sounds link: phones use the bottom navigation instead. */
+@media (max-width: 520px) {
+  .nav a.nav-wide-only { display: none; }
+}

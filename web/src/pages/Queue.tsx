@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useState } from 'react'
 import { Link, useNavigate, useSearchParams } from 'react-router-dom'
+import { BottomNav } from '../components/BottomNav'
 import { ReminderSettingsModal } from '../components/ReminderSettingsModal'
 import { Alert, ContentTypeBadge, Empty, Spinner, StatusBadge, formatDate } from '../components/ui'
 import { ApiError, PLATFORM_LABELS, api, type Content, type Stats } from '../lib/api'
@@ -311,46 +312,10 @@ export function Queue() {
       )}
 
       {/* Bottom Navigation */}
-      <nav className="bottom-nav" aria-label="Main Navigation">
-        <div className="bottom-nav-inner">
-          <button
-            type="button"
-            className={`bottom-nav-item ${currentTab === 'tasks' ? 'active' : ''}`}
-            onClick={() => selectTab('tasks')}
-          >
-            <TasksIcon />
-            <span>Tasks</span>
-          </button>
-          <button
-            type="button"
-            className={`bottom-nav-item ${currentTab === 'history' ? 'active' : ''}`}
-            onClick={() => selectTab('history')}
-          >
-            <CheckCircleIcon />
-            <span>Published</span>
-          </button>
-        </div>
-      </nav>
+      <BottomNav active={currentTab} onSelect={selectTab} />
 
       {showReminderModal && <ReminderSettingsModal onClose={() => setShowReminderModal(false)} />}
     </div>
   )
 }
 
-function TasksIcon({ size = 20 }: { size?: number }) {
-  return (
-    <svg width={size} height={size} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
-      <path d="M9 11l3 3L22 4" />
-      <path d="M21 12v7a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h11" />
-    </svg>
-  )
-}
-
-function CheckCircleIcon({ size = 20 }: { size?: number }) {
-  return (
-    <svg width={size} height={size} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
-      <path d="M22 11.08V12a10 10 0 1 1-5.93-9.14" />
-      <polyline points="22 4 12 14.01 9 11.01" />
-    </svg>
-  )
-}

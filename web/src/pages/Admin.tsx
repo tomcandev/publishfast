@@ -1,21 +1,22 @@
 import { useCallback, useEffect, useRef, useState, type FormEvent } from 'react'
-import { Alert, Spinner, StatusBadge, formatDate } from '../components/ui'
-import { api, assetUrl, type Asset, type Content, type ContentStatus, type HookPerformanceItem, type MetricSummary, type Role, type User } from '../lib/api'
+import { Alert, Spinner, StatusBadge, formatBytes, formatDate } from '../components/ui'
+import { STATUS_LABELS, api, assetUrl, liveAssets, mediaRemovedAt, type StorageReport, type Asset, type Content, type ContentStatus, type HookPerformanceItem, type MetricSummary, type Role, type User } from '../lib/api'
 
-type Tab = 'contents' | 'analytics' | 'users' | 'tokens'
+type Tab = 'contents' | 'analytics' | 'users' | 'tokens' | 'storage'
 
 export function Admin() {
   const [tab, setTab] = useState<Tab>('contents')
   return (
     <div className="page page-wide stack">
       <h1>Admin</h1>
-      <div className="nav" role="tablist">
+      <div className="nav" role="tablist" style={{ flexWrap: 'wrap' }}>
         {(
           [
             ['contents', 'Content'],
             ['analytics', '📊 Analytics & Hooks'],
             ['users', 'Users'],
             ['tokens', 'API Tokens'],
+            ['storage', 'Storage'],
           ] as const
         ).map(([key, label]) => (
           <button
@@ -31,6 +32,7 @@ export function Admin() {
       {tab === 'analytics' && <AnalyticsTab />}
       {tab === 'users' && <UsersTab />}
       {tab === 'tokens' && <TokensTab />}
+      {tab === 'storage' && <StorageTab />}
     </div>
   )
 }
@@ -422,8 +424,11 @@ function EditContentModal({
   const [busy, setBusy] = useState(false)
   const [error, setError] = useState<string | null>(null)
 
-  const videos = content.assets ? content.assets.filter((a) => a.type === 'video' || (a.mime && a.mime.startsWith('video/'))) : []
-  const images = content.assets ? content.assets.filter((a) => a.type === 'image' || (a.mime && a.mime.startsWith('image/'))) : []
+  // Files removed by the media prune are listed as removed, not previewed.
+  const media = content.assets ? liveAssets(content.assets) : []
+  const removedAt = content.assets ? mediaRemovedAt(content.assets) : null
+  const videos = media.filter((a) => a.type === 'video' || (a.mime && a.mime.startsWith('video/')))
+  const images = media.filter((a) => a.type === 'image' || (a.mime && a.mime.startsWith('image/')))
 
   useEffect(() => {
     function handleKeyDown(e: KeyboardEvent) {
@@ -493,8 +498,15 @@ function EditContentModal({
 
           {error && <Alert>{error}</Alert>}
 
+          {removedAt && (
+            <Alert kind="warn">
+              Media removed {new Date(removedAt).toLocaleDateString()} ({content.assets.length - media.length} file
+              {content.assets.length - media.length === 1 ? '' : 's'}). The post, its links and its numbers are kept.
+            </Alert>
+          )}
+
           {/* Media Preview Section */}
-          {content.assets && content.assets.length > 0 && (
+          {media.length > 0 && (
             <div
               className="stack"
               style={{
@@ -507,7 +519,7 @@ function EditContentModal({
             >
               <div className="row" style={{ justifyContent: 'space-between', alignItems: 'center' }}>
                 <span className="label" style={{ fontSize: '0.8rem', fontWeight: 650 }}>
-                  Attached Media ({content.assets.length} file{content.assets.length > 1 ? 's' : ''})
+                  Attached Media ({media.length} file{media.length > 1 ? 's' : ''})
                 </span>
                 <span className="hint" style={{ fontSize: '0.75rem' }}>
                   {content.contentType === 'carousel' ? '📸 Carousel Slides (tap to enlarge)' : '🎬 Video'}
@@ -1649,6 +1661,67 @@ function TokensTab() {
                 <td colSpan={4} className="hint" style={{ textAlign: 'center', padding: 28 }}>
                   No API tokens found.
                 </td>
+              </tr>
+            )}
+          </tbody>
+        </table>
+      </div>
+    </div>
+  )
+}
+
+/* ---------------- storage ---------------- */
+
+function StorageTab() {
+  const [data, setData] = useState<StorageReport | null>(null)
+  const [error, setError] = useState<string | null>(null)
+
+  useEffect(() => {
+    api.admin
+      .storage()
+      .then(setData)
+      .catch((err) => setError(err instanceof Error ? err.message : 'Failed to load storage'))
+  }, [])
+
+  if (error) return <Alert>{error}</Alert>
+  if (!data) return <Spinner />
+
+  const size = (b: number) => (b >= 1024 ** 3 ? `${(b / 1024 ** 3).toFixed(1)} GB` : formatBytes(b))
+  const rows: [string, string, number][] = [
+    ...data.byStatus.map((r): [string, string, number] => [`Media: ${STATUS_LABELS[r.status] ?? r.status}`, `${r.files} files`, r.bytes]),
+    ['Media removed so far (pruned)', `${data.pruned.files} files`, data.pruned.bytes],
+    ['Drop box', `${data.dropBox.files} files`, data.dropBox.bytes],
+    ['Unfinished uploads', `${data.unfinishedUploads.uploads} uploads`, data.unfinishedUploads.bytes],
+  ]
+  return (
+    <div className="stack">
+      <p className="hint">
+        {data.prune.afterDays
+          ? `Media of published posts is deleted ${data.prune.afterDays} day(s) after their newest publication.`
+          : 'Media is never deleted automatically (PRUNE_PUBLISHED_AFTER_DAYS is not set).'}
+      </p>
+      <div className="table-wrap">
+        <table>
+          <thead>
+            <tr>
+              <th>What</th>
+              <th>Count</th>
+              <th>Size</th>
+            </tr>
+          </thead>
+          <tbody>
+            {rows.map(([what, count, bytes]) => (
+              <tr key={what}>
+                <td>{what}</td>
+                <td className="hint">{count}</td>
+                <td>{size(bytes)}</td>
+              </tr>
+            ))}
+            {data.disk && (
+              <tr>
+                <td>Free disk</td>
+                <td className="hint">of {size(data.disk.totalBytes)}</td>
+                <td>{size(data.disk.freeBytes)}</td>
               </tr>
             )}
           </tbody>

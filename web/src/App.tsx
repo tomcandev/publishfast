@@ -11,6 +11,7 @@ import { Admin } from './pages/Admin'
 import { BoltIcon, Login } from './pages/Login'
 import { Post } from './pages/Post'
 import { Queue } from './pages/Queue'
+import { Sounds } from './pages/Sounds'
 
 export function App() {
   const { user, loading, signOut, switchUser } = useAuth()
@@ -50,6 +51,9 @@ export function App() {
           </NavLink>
 
           <nav className="nav">
+            <NavLink to="/sounds" className="nav-wide-only">
+              Sounds
+            </NavLink>
             {user.role === 'admin' && <NavLink to="/admin">Admin</NavLink>}
 
             <div className="menu-wrap" ref={menuRef}>
@@ -181,6 +185,7 @@ export function App() {
         <Routes>
           <Route path="/" element={<Queue />} />
           <Route path="/post/:id" element={<Post />} />
+          <Route path="/sounds" element={<Sounds />} />
           <Route path="/history" element={<Navigate to="/?tab=history" replace />} />
           <Route path="/admin" element={user.role === 'admin' ? <Admin /> : <Navigate to="/" replace />} />
           <Route path="*" element={<Navigate to="/" replace />} />

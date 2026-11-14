@@ -23,6 +23,17 @@ export interface Asset {
   size: number
   sortOrder: number
   type: 'video' | 'image' | 'file'
+  /** Set when the media prune deleted the file (after the post was done); downloads answer 410. */
+  prunedAt?: string | null
+}
+
+/** The files that still exist (not removed by the media prune). */
+export const liveAssets = (assets: Asset[]) => assets.filter((a) => !a.prunedAt)
+
+/** The newest prune date among an item's files, or null when none was pruned. */
+export function mediaRemovedAt(assets: Asset[]) {
+  const dates = assets.map((a) => a.prunedAt).filter((d): d is string => !!d)
+  return dates.length ? dates.sort().at(-1)! : null
 }
 
 export interface Publication {
@@ -39,6 +50,44 @@ export interface Publication {
   shares?: number
   lastCheckedAt?: string | null
   metricError?: string | null
+  soundId?: string | null
+  soundTitle?: string | null
+  soundAuthor?: string | null
+  soundOriginal?: boolean | null
+}
+
+/** One row of the sound ranking (GET /api/sounds). */
+export interface RankedSound {
+  id: string
+  title: string | null
+  author: string | null
+  original: boolean
+  url: string | null
+  copyText: string
+  status: 'active' | 'hidden'
+  /** Admins only. */
+  note?: string | null
+  ours: { posts: number; medianRatio: number | null; enough: boolean }
+  sightings: {
+    count: number
+    bestPlays: number
+    bestRank: number | null
+    sources: string[]
+    newestVideoUrl: string | null
+    bestVideoUrl: string | null
+    bestVideoPlays: number | null
+  }
+  score: number
+  lastSeenAt: string
+}
+
+export interface StorageReport {
+  byStatus: { status: ContentStatus; files: number; bytes: number }[]
+  pruned: { files: number; bytes: number }
+  dropBox: { files: number; bytes: number }
+  unfinishedUploads: { uploads: number; bytes: number }
+  disk: { freeBytes: number; totalBytes: number } | null
+  prune: { afterDays: number | null }
 }
 
 export interface Content {
@@ -267,7 +316,24 @@ export const api = {
   deletePublication: (id: string) =>
     request<{ ok: true }>(`/api/publications/${id}`, { method: 'DELETE' }),
 
+  sounds: (window: 7 | 14 | 30 = 14, opts: { limit?: number; hidden?: boolean } = {}) =>
+    request<{ window: number; sounds: RankedSound[] }>(
+      `/api/sounds?window=${window}&limit=${opts.limit ?? 50}${opts.hidden ? '&hidden=1' : ''}`,
+    ),
+
+  soundFromLink: (videoUrl: string) =>
+    request<{ status: 'recorded' | 'known'; reason?: string; sound: { id: string; title?: string | null; author?: string | null; copyText?: string } }>(
+      '/api/sounds/from-link',
+      { method: 'POST', body: JSON.stringify({ videoUrl }) },
+    ),
+
   admin: {
+    updateSound: (id: string, patch: { status?: 'active' | 'hidden'; note?: string | null }) =>
+      request<{ sound: { id: string; status: 'active' | 'hidden'; note: string | null } }>(
+        `/api/admin/sounds/${encodeURIComponent(id)}`,
+        { method: 'PATCH', body: JSON.stringify(patch) },
+      ),
+    storage: () => request<StorageReport>('/api/admin/storage'),
     users: () => request<{ users: User[] }>('/api/admin/users'),
     createUser: (input: {
       username: string
