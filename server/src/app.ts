@@ -17,6 +17,7 @@ import { ingestRoutes } from './routes/ingest.js'
 import { notificationRoutes } from './routes/notifications.js'
 import { publicationMetricRoutes } from './routes/publicationMetrics.js'
 import { publicationRoutes } from './routes/publications.js'
+import { soundRoutes } from './routes/sounds.js'
 import { uploadRoutes } from './routes/uploads.js'
 
 /**
@@ -61,6 +62,7 @@ export async function buildApp(
   await app.register(exportRoutes)
   await app.register(fileRoutes)
   await app.register(uploadRoutes)
+  await app.register(soundRoutes)
 
   app.get('/api/health', async () => ({ ok: true }))
 

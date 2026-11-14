@@ -9,7 +9,7 @@ export const ROLES = ['admin', 'kol'] as const
  * What an API token may do. A row with a NULL scope is a token created before
  * scopes existed and keeps its role-based behaviour (see lib/scopes.ts).
  */
-export const TOKEN_SCOPES = ['admin', 'ingest', 'poster', 'read', 'files'] as const
+export const TOKEN_SCOPES = ['admin', 'ingest', 'poster', 'read', 'files', 'sounds'] as const
 export type TokenScope = (typeof TOKEN_SCOPES)[number]
 
 const now = sql`(strftime('%Y-%m-%dT%H:%M:%fZ','now'))`
@@ -128,10 +128,16 @@ export const publications = sqliteTable(
     lastCheckedAt: text('last_checked_at'),
     metricError: text('metric_error'),
     createdAt: text('created_at').notNull().default(now),
+    /** The TikTok sound of the post, filled by the public-count sync from the video page. */
+    soundId: text('sound_id'),
+    soundTitle: text('sound_title'),
+    soundAuthor: text('sound_author'),
+    soundOriginal: integer('sound_original', { mode: 'boolean' }),
   },
   (t) => [
     index('publications_content_idx').on(t.contentId),
     index('publications_user_idx').on(t.userId),
+    index('publications_sound_idx').on(t.soundId),
     // One row per (content, platform) — re-posting the same content to the
     // same platform updates the existing row instead of duplicating it.
     uniqueIndex('publications_content_platform_unique').on(t.contentId, t.platform),
@@ -261,6 +267,59 @@ export const uploadParts = sqliteTable(
   (t) => [uniqueIndex('upload_parts_unique').on(t.uploadId, t.n)],
 )
 
+export const SOUND_SOURCES = ['trend', 'viral', 'manual'] as const
+export const SOUND_STATUSES = ['active', 'hidden'] as const
+
+/**
+ * The sound bank (contract section 13): TikTok sounds worth using. A row is
+ * made from what the server itself read on a TikTok video page: a sighting
+ * (routes/sounds.ts) or one of our own posts (the public-count sync).
+ */
+export const sounds = sqliteTable('sounds', {
+  /** TikTok's music id (digits). */
+  id: text('id').primaryKey(),
+  title: text('title'),
+  author: text('author'),
+  original: integer('original', { mode: 'boolean' }).notNull().default(false),
+  /** The sound's TikTok page, formed from its id; null when it cannot be formed. */
+  url: text('url'),
+  /** Oldest and newest evidence: a sighting's time, or our post's publication time. */
+  firstSeenAt: text('first_seen_at').notNull().default(now),
+  lastSeenAt: text('last_seen_at').notNull().default(now),
+  status: text('status', { enum: SOUND_STATUSES }).notNull().default('active'),
+  /** The admin's note, max 300. */
+  note: text('note'),
+})
+
+/** One row per video (outside our own posts) seen using a sound. */
+export const soundSightings = sqliteTable(
+  'sound_sightings',
+  {
+    id: text('id').primaryKey(),
+    soundId: text('sound_id')
+      .notNull()
+      .references(() => sounds.id, { onDelete: 'cascade' }),
+    /** Canonical https://www.tiktok.com/@user/video/<id> as the server read it. */
+    videoUrl: text('video_url').notNull(),
+    videoAuthor: text('video_author'),
+    plays: integer('plays'),
+    likes: integer('likes'),
+    postedAt: text('posted_at'),
+    source: text('source', { enum: SOUND_SOURCES }).notNull(),
+    /** Two letters, upper case. */
+    region: text('region'),
+    /** Its place in a trending list. */
+    rank: integer('rank'),
+    seenAt: text('seen_at').notNull(),
+    /** Token that reported it (no FK, like the audit trail); null for a person's paste. */
+    tokenId: text('token_id'),
+  },
+  (t) => [
+    uniqueIndex('sound_sightings_video_url_unique').on(t.videoUrl),
+    index('sound_sightings_sound_idx').on(t.soundId, t.seenAt),
+  ],
+)
+
 /** Audit trail: one row per state-changing call made with an API token. */
 export const tokenEvents = sqliteTable(
   'token_events',
@@ -319,6 +378,8 @@ export type MetricSnapshot = typeof metricSnapshots.$inferSelect
 export type TokenEvent = typeof tokenEvents.$inferSelect
 export type StoredFile = typeof files.$inferSelect
 export type Upload = typeof uploads.$inferSelect
+export type Sound = typeof sounds.$inferSelect
+export type SoundSighting = typeof soundSightings.$inferSelect
 export type ReminderSettings = typeof reminderSettings.$inferSelect
 export type PushSubscriptionRow = typeof pushSubscriptions.$inferSelect
 

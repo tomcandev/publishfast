@@ -103,6 +103,26 @@ describe('token CLI', () => {
     assert.match(list.stdout, /vps-worker\s+files\s+-\s+-\s+nhi\//)
   })
 
+  it('sounds tokens: made with no extra flag, reach the sound routes only; list shows the scope', async () => {
+    const s = await cli('create', '--name', 'scout', '--scope', 'sounds')
+    assert.equal(s.code, 0, s.stderr)
+    assert.match(s.stdout, /^pf_[0-9a-f]{48}\n$/)
+    const token = s.stdout.trim()
+    assert.equal((await call(app, 'GET', '/api/sounds', { token })).statusCode, 200)
+    assert.equal((await call(app, 'GET', '/api/export/publications', { token })).statusCode, 403)
+    assert.equal((await call(app, 'GET', '/api/contents', { token })).statusCode, 403)
+    for (const args of [
+      ['create', '--name', 's2', '--scope', 'sounds', '--file-prefix', 'nhi/'],
+      ['create', '--name', 's3', '--scope', 'sounds', '--user', poster.username],
+      ['create', '--name', 's4', '--scope', 'sounds', '--assignees', ytPte.username],
+    ]) {
+      const res = await cli(...args)
+      assert.equal(res.code, 1, args.join(' '))
+      assert.equal(res.stdout, '')
+    }
+    assert.match((await cli('list')).stdout, /scout\s+sounds/)
+  })
+
   it('refuses bad combinations and a duplicate active name, printing nothing on stdout', async () => {
     for (const args of [
       ['create', '--name', 'weekly', '--scope', 'read'], // duplicate active name

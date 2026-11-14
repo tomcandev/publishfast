@@ -94,6 +94,11 @@ describe('migrate() on a database from main@0c7a5bd', () => {
     assert.ok(columns('uploads').includes('part_size'))
     assert.ok(columns('upload_parts').includes('n'))
     assert.ok(columns('assets').includes('pruned_at'))
+    for (const c of ['sound_id', 'sound_title', 'sound_author', 'sound_original']) {
+      assert.ok(columns('publications').includes(c), c)
+    }
+    assert.ok(columns('sounds').includes('last_seen_at'))
+    assert.ok(columns('sound_sightings').includes('video_url'))
   })
 
   it('keeps every old row and value; new columns are NULL or their default', () => {
@@ -114,6 +119,9 @@ describe('migrate() on a database from main@0c7a5bd', () => {
     assert.equal(kol.notes, 'a note')
     const pub = sqlite.prepare("SELECT * FROM publications WHERE id = 'old-pub'").get() as Record<string, unknown>
     assert.equal(pub.views, 77)
+    assert.equal(pub.sound_id, null)
+    assert.equal(pub.sound_original, null)
+    assert.equal((sqlite.prepare('SELECT count(*) n FROM sounds').get() as { n: number }).n, 0)
     const tokens = sqlite.prepare('SELECT scope, revoked_at, expires_at FROM api_tokens').all() as Record<string, unknown>[]
     assert.equal(tokens.length, 2)
     assert.ok(tokens.every((t) => t.scope === null && t.revoked_at === null && t.expires_at === null))

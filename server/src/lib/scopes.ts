@@ -5,7 +5,7 @@ export type NarrowScope = Exclude<TokenScope, 'admin'>
 
 /**
  * THE allow-list for narrow token scopes. This is the only place that decides
- * which routes an `ingest`, `poster` or `read` token may call; attachIdentity
+ * which routes an `ingest`, `poster`, `read`, `files` or `sounds` token may call; attachIdentity
  * (lib/guards.ts) enforces it for every request before any route handler runs.
  *
  * Keys are `METHOD /route/pattern` exactly as the route is registered in
@@ -57,9 +57,14 @@ export const TOKEN_ROUTES: Record<string, { scopes: readonly NarrowScope[]; acti
   'DELETE /api/files/*': { scopes: ['files'], action: 'file.delete' },
   'GET /api/files': { scopes: ['files'] },
 
-  // read: analysis exports only
+  // read: analysis exports only (and the sound ranking, below)
   'GET /api/export/publications': { scopes: ['read'] },
   'GET /api/export/metrics': { scopes: ['read'] },
+
+  // sounds: report videos seen using a sound, and read the ranking (routes/sounds.ts).
+  // The server fetches each reported page itself, through lib/tiktok.ts's guard.
+  'POST /api/sounds/sightings': { scopes: ['sounds'], action: 'sounds.sightings' },
+  'GET /api/sounds': { scopes: ['sounds', 'read'] },
 }
 
 function routeKey(method: string, routeUrl: string | undefined) {

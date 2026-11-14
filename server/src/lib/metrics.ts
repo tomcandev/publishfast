@@ -2,6 +2,8 @@ import { randomUUID } from 'node:crypto'
 import { eq } from 'drizzle-orm'
 import { db } from '../db/index.js'
 import { contents, metricSnapshots, publications, users } from '../db/schema.js'
+import { upsertSound } from './sounds.js'
+import { TikTokFetchError, fetchTikTokPage, parseTikTokVideoPage, soundOf, type ParsedSound, type TikTokPage } from './tiktok.js'
 
 export interface MetricResult {
   views: number
@@ -9,6 +11,8 @@ export interface MetricResult {
   comments: number
   shares: number
   error: string | null
+  /** TikTok only: the post's sound, when the page (or tikwm) named one. */
+  sound?: ParsedSound | null
 }
 
 export interface HookPerformanceItem {
@@ -109,6 +113,11 @@ export async function resolveFinalUrl(rawUrl: string): Promise<string> {
 
 /**
  * Fetch public video/post metrics across TikTok, YouTube, Instagram
+ *
+ * A link that names tiktok.com goes to the TikTok reader, which fetches the
+ * page only through the URL guard (lib/tiktok.ts). Every other link is
+ * handled exactly as before: resolved with redirects followed, then a
+ * YouTube link is read.
  */
 export async function fetchSocialMetrics(rawUrl: string, _platform?: string): Promise<MetricResult> {
   const cleanUrl = rawUrl.trim()
@@ -116,10 +125,14 @@ export async function fetchSocialMetrics(rawUrl: string, _platform?: string): Pr
     return { views: 0, likes: 0, comments: 0, shares: 0, error: 'Empty URL' }
   }
 
+  // 1. TikTok Handler (the guarded read resolves short links itself)
+  if (cleanUrl.includes('tiktok.com')) {
+    return fetchTikTokMetrics(cleanUrl)
+  }
+
   const resolved = await resolveFinalUrl(cleanUrl)
 
-  // 1. TikTok Handler
-  if (cleanUrl.includes('tiktok.com') || resolved.includes('tiktok.com')) {
+  if (resolved.includes('tiktok.com')) {
     return fetchTikTokMetrics(resolved)
   }
 
@@ -139,9 +152,22 @@ export async function fetchSocialMetrics(rawUrl: string, _platform?: string): Pr
 }
 
 async function fetchTikTokMetrics(url: string): Promise<MetricResult> {
+  // The video page, through the URL guard: TikTok hosts only, redirects
+  // checked hop by hop, 15 s, 3 MB. It gives the final URL (short links
+  // resolved), the sound, and the counts when tikwm has none.
+  let page: TikTokPage | null = null
+  let pageError = 'TikTok fetch failed'
+  try {
+    page = await fetchTikTokPage(url)
+  } catch (err) {
+    if (err instanceof TikTokFetchError) pageError = err.message
+  }
+  const target = page?.url ?? url
+  const fromPage = page ? parseTikTokVideoPage(page.body)?.sound ?? null : null
+
   try {
     // 1. Try public tikwm endpoint (supports both video and photo/carousel URLs)
-    const tikwmUrl = `https://www.tikwm.com/api/?url=${encodeURIComponent(url)}`
+    const tikwmUrl = `https://www.tikwm.com/api/?url=${encodeURIComponent(target)}`
     const res = await fetch(tikwmUrl, {
       headers: {
         'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/128.0.0.0 Safari/537.36',
@@ -158,6 +184,7 @@ async function fetchTikTokMetrics(url: string): Promise<MetricResult> {
           digg_count?: number
           comment_count?: number
           share_count?: number
+          music_info?: unknown
         }
       }
       if (data && data.code === 0 && data.data) {
@@ -167,59 +194,45 @@ async function fetchTikTokMetrics(url: string): Promise<MetricResult> {
           comments: Number(data.data.comment_count) || 0,
           shares: Number(data.data.share_count) || 0,
           error: null,
+          sound: fromPage ?? soundOf(data.data.music_info),
         }
       }
     }
   } catch {
-    // Fall back to direct scraping if tikwm is temporarily unreachable
+    // Fall back to the page if tikwm is temporarily unreachable
   }
 
-  try {
-    const res = await fetch(url, {
-      headers: {
-        'User-Agent':
-          'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/128.0.0.0 Safari/537.36',
-        Accept: 'text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8',
-        'Accept-Language': 'en-US,en;q=0.9',
-      },
-      signal: AbortSignal.timeout(8000),
-    })
+  if (!page) {
+    return { views: 0, likes: 0, comments: 0, shares: 0, error: pageError }
+  }
 
-    const html = await res.text()
+  const html = page.body
 
-    let views = 0
-    let likes = 0
-    let comments = 0
-    let shares = 0
+  let views = 0
+  let likes = 0
+  let comments = 0
+  let shares = 0
 
-    // Search for playCount, diggCount, commentCount, shareCount in SSR payload
-    const playMatch = html.match(/"playCount":\s*(\d+)/)
-    if (playMatch) views = parseInt(playMatch[1]!, 10)
+  // Search for playCount, diggCount, commentCount, shareCount in SSR payload
+  const playMatch = html.match(/"playCount":\s*(\d+)/)
+  if (playMatch) views = parseInt(playMatch[1]!, 10)
 
-    const diggMatch = html.match(/"diggCount":\s*(\d+)/)
-    if (diggMatch) likes = parseInt(diggMatch[1]!, 10)
+  const diggMatch = html.match(/"diggCount":\s*(\d+)/)
+  if (diggMatch) likes = parseInt(diggMatch[1]!, 10)
 
-    const commentMatch = html.match(/"commentCount":\s*(\d+)/)
-    if (commentMatch) comments = parseInt(commentMatch[1]!, 10)
+  const commentMatch = html.match(/"commentCount":\s*(\d+)/)
+  if (commentMatch) comments = parseInt(commentMatch[1]!, 10)
 
-    const shareMatch = html.match(/"shareCount":\s*(\d+)/)
-    if (shareMatch) shares = parseInt(shareMatch[1]!, 10)
+  const shareMatch = html.match(/"shareCount":\s*(\d+)/)
+  if (shareMatch) shares = parseInt(shareMatch[1]!, 10)
 
-    return {
-      views,
-      likes,
-      comments,
-      shares,
-      error: null,
-    }
-  } catch (err) {
-    return {
-      views: 0,
-      likes: 0,
-      comments: 0,
-      shares: 0,
-      error: err instanceof Error ? err.message : 'TikTok fetch failed',
-    }
+  return {
+    views,
+    likes,
+    comments,
+    shares,
+    error: null,
+    sound: fromPage,
   }
 }
 
@@ -290,14 +303,24 @@ export async function syncAllPublicationMetrics(): Promise<{
       comments: metrics.comments > 0 ? metrics.comments : pub.comments,
       shares: metrics.shares > 0 ? metrics.shares : pub.shares,
     }
+    // The post's TikTok sound, when the page named one; a page without one leaves the old value.
+    const sound = !metrics.error && metrics.sound ? metrics.sound : null
     db.update(publications)
       .set({
         ...counts,
         lastCheckedAt: nowIso,
         metricError: metrics.error,
+        ...(sound
+          ? { soundId: sound.id, soundTitle: sound.title || null, soundAuthor: sound.author || null, soundOriginal: sound.original }
+          : {}),
       })
       .where(eq(publications.id, pub.id))
       .run()
+    if (sound) {
+      // Into the bank too, dated by the post's publication time (evidence, not the sync's clock).
+      const t = Date.parse(pub.publishedAt ?? pub.createdAt)
+      upsertSound(sound, Number.isFinite(t) && t <= Date.now() ? new Date(t).toISOString() : nowIso)
+    }
 
     // Keep the history too. A failed fetch changed no counts, so it adds no reading.
     if (!metrics.error) {

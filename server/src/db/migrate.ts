@@ -29,6 +29,10 @@ const addedColumns: [table: string, column: string, ddl: string][] = [
   ['uploads', 'completing_at', 'TEXT'],
   ['upload_parts', 'file', 'TEXT'],
   ['assets', 'pruned_at', 'TEXT'],
+  ['publications', 'sound_id', 'TEXT'],
+  ['publications', 'sound_title', 'TEXT'],
+  ['publications', 'sound_author', 'TEXT'],
+  ['publications', 'sound_original', 'INTEGER'],
 ]
 
 const statements = [
@@ -102,11 +106,16 @@ const statements = [
     shares INTEGER NOT NULL DEFAULT 0,
     last_checked_at TEXT,
     metric_error TEXT,
-    created_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ','now'))
+    created_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ','now')),
+    sound_id TEXT,
+    sound_title TEXT,
+    sound_author TEXT,
+    sound_original INTEGER
   )`,
   `CREATE INDEX IF NOT EXISTS publications_content_idx ON publications (content_id)`,
   `CREATE INDEX IF NOT EXISTS publications_user_idx ON publications (user_id)`,
   `CREATE UNIQUE INDEX IF NOT EXISTS publications_content_platform_unique ON publications (content_id, platform)`,
+  `CREATE INDEX IF NOT EXISTS publications_sound_idx ON publications (sound_id)`,
 
   `CREATE TABLE IF NOT EXISTS api_tokens (
     id TEXT PRIMARY KEY,
@@ -189,6 +198,34 @@ const statements = [
   )`,
   `CREATE UNIQUE INDEX IF NOT EXISTS upload_parts_unique ON upload_parts (upload_id, n)`,
   `CREATE INDEX IF NOT EXISTS files_expires_idx ON files (expires_at)`,
+
+  `CREATE TABLE IF NOT EXISTS sounds (
+    id TEXT PRIMARY KEY,
+    title TEXT,
+    author TEXT,
+    original INTEGER NOT NULL DEFAULT 0,
+    url TEXT,
+    first_seen_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ','now')),
+    last_seen_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ','now')),
+    status TEXT NOT NULL DEFAULT 'active',
+    note TEXT
+  )`,
+  `CREATE TABLE IF NOT EXISTS sound_sightings (
+    id TEXT PRIMARY KEY,
+    sound_id TEXT NOT NULL REFERENCES sounds(id) ON DELETE CASCADE,
+    video_url TEXT NOT NULL,
+    video_author TEXT,
+    plays INTEGER,
+    likes INTEGER,
+    posted_at TEXT,
+    source TEXT NOT NULL,
+    region TEXT,
+    rank INTEGER,
+    seen_at TEXT NOT NULL,
+    token_id TEXT
+  )`,
+  `CREATE UNIQUE INDEX IF NOT EXISTS sound_sightings_video_url_unique ON sound_sightings (video_url)`,
+  `CREATE INDEX IF NOT EXISTS sound_sightings_sound_idx ON sound_sightings (sound_id, seen_at)`,
 
   `CREATE TABLE IF NOT EXISTS reminder_settings (
     user_id TEXT PRIMARY KEY REFERENCES users(id) ON DELETE CASCADE,

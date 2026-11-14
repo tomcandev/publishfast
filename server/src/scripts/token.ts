@@ -1,7 +1,7 @@
 /**
  * API token and account CLI. Tokens are made here, not in the web page.
  *
- *   npm run -s token -w server -- create --name <n> --scope <admin|ingest|poster|read|files>
+ *   npm run -s token -w server -- create --name <n> --scope <admin|ingest|poster|read|files|sounds>
  *       [--user <username>] [--assignees <u1,u2>] [--file-prefix <p>] [--expires <days>]
  *   npm run -s token -w server -- list [--events <name>]
  *   npm run -s token -w server -- revoke --name <n>

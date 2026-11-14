@@ -164,3 +164,29 @@ export async function requireFileToken(req: FastifyRequest, reply: FastifyReply)
   reply.code(req.user || req.apiToken ? 403 : 401).send({ error: 'A files token is required' })
   return reply
 }
+
+/** Sound sightings: a sounds-scope token, an admin-power token, or an admin session. */
+export async function requireSoundsWriter(req: FastifyRequest, reply: FastifyReply) {
+  if (req.apiToken?.scope === 'sounds') return
+  if (req.tokenRole === 'admin') return
+  if (req.user?.role === 'admin' && !req.apiToken) return
+  reply.code(req.user || req.apiToken ? 403 : 401).send({ error: 'A sounds token is required' })
+  return reply
+}
+
+/** The sound ranking: any signed-in person, a sounds- or read-scope token, or an admin-power token. */
+export async function requireSoundsReader(req: FastifyRequest, reply: FastifyReply) {
+  if (req.user && !req.apiToken) return
+  if (req.tokenRole === 'admin') return
+  if (req.apiToken?.scope === 'sounds' || req.apiToken?.scope === 'read') return
+  reply.code(req.apiToken ? 403 : 401).send({ error: 'Not signed in' })
+  return reply
+}
+
+/** "Paste a video you saw": a signed-in person (session), or an admin-power token. */
+export async function requireSessionOrAdminToken(req: FastifyRequest, reply: FastifyReply) {
+  if (req.user && !req.apiToken) return
+  if (req.tokenRole === 'admin') return
+  reply.code(req.apiToken ? 403 : 401).send({ error: 'Not signed in' })
+  return reply
+}
