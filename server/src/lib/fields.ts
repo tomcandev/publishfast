@@ -20,3 +20,22 @@ export function jsonObject(maxBytes: number, field: string) {
 
 export const META_MAX_BYTES = 64 * 1024
 export const EXTRA_MAX_BYTES = 16 * 1024
+
+/** Text made safe to store and show: no control or direction characters, whitespace collapsed, trimmed, capped. */
+export function cleanText(v: unknown, max = 200) {
+  if (typeof v !== 'string') return ''
+  return v
+    .replace(/[\u0000-\u001f\u007f-\u009f\u200b\u200e\u200f\u202a-\u202e\u2066-\u2069\ufeff]/g, ' ')
+    .replace(/\s+/g, ' ')
+    .trim()
+    .slice(0, max)
+}
+
+/** The first non-empty line of a caption, cleaned, at most 200 characters; '' when there is none. */
+export function captionFirstLine(caption: string | null | undefined) {
+  for (const line of (caption ?? '').split(/\r\n|\r|\n/)) {
+    const clean = cleanText(line, 200)
+    if (clean) return clean
+  }
+  return ''
+}

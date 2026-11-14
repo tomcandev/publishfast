@@ -1,4 +1,5 @@
 import { isIP } from 'node:net'
+import { cleanText } from './fields.js'
 
 /**
  * Server-side reads of TikTok video pages (contract section 13, and the
@@ -164,15 +165,8 @@ export type ParsedVideo = {
 type Json = Record<string, unknown>
 const obj = (v: unknown): Json | null => (v && typeof v === 'object' && !Array.isArray(v) ? (v as Json) : null)
 
-/** Text from a page, made safe to store and show: no control or direction characters, trimmed, capped. */
-export function cleanText(v: unknown, max = 200) {
-  if (typeof v !== 'string') return ''
-  return v
-    .replace(/[\u0000-\u001f\u007f-\u009f​‎‏‪-‮⁦-⁩﻿]/g, ' ')
-    .replace(/\s+/g, ' ')
-    .trim()
-    .slice(0, max)
-}
+/** Text from a page, made safe to store and show (lib/fields.ts). */
+export { cleanText }
 
 /** An id of digits only. A JSON number is accepted only while it is exact. */
 function digits(v: unknown) {

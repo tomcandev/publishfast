@@ -4,13 +4,14 @@ import { alias } from 'drizzle-orm/sqlite-core'
 import { z } from 'zod'
 import { db } from '../db/index.js'
 import { contents, metricSnapshots, publications, users } from '../db/schema.js'
-import { isoTime } from '../lib/fields.js'
+import { captionFirstLine, isoTime } from '../lib/fields.js'
 import { requireExport } from '../lib/guards.js'
 
 /**
  * Exports for analysis. Deliberately narrow columns: content code, title,
- * source and usernames identify a row; there are no emails, notes, asset
- * paths, captions, meta or token data in either export.
+ * the caption's first line (the hook), hook id, source and usernames
+ * identify a row; there are no emails, notes, asset paths, full captions,
+ * meta or token data in either export.
  */
 
 const querySchema = z.object({
@@ -28,6 +29,8 @@ const identity = {
   publicationId: publications.id,
   code: contents.code,
   title: contents.title,
+  caption: contents.caption,
+  hookId: contents.hookId,
   source: contents.source,
   assignee: assignee.username,
   poster: poster.username,
@@ -36,6 +39,21 @@ const identity = {
 }
 
 type Row = Record<string, unknown>
+
+/** The identifying columns, in order; the caption itself never leaves: only its first line. */
+const IDENTITY_COLUMNS = ['publicationId', 'code', 'title', 'captionFirstLine', 'hookId', 'source', 'assignee', 'poster', 'platform', 'url']
+
+function identify<T extends { caption: string | null; hookId: string | null }>(rows: T[]) {
+  return rows.map(({ caption, hookId, ...rest }) => {
+    const r = rest as Row
+    const out: Row = {}
+    for (const c of IDENTITY_COLUMNS) {
+      out[c] = c === 'captionFirstLine' ? captionFirstLine(caption) : c === 'hookId' ? (hookId ?? '') : r[c]
+    }
+    for (const [k, v] of Object.entries(r)) if (!(k in out)) out[k] = v
+    return out
+  })
+}
 
 /** RFC 4180 quoting, plus a leading ' on text that a spreadsheet would run as a formula. */
 function csvCell(value: unknown) {
@@ -108,11 +126,8 @@ export async function exportRoutes(app: FastifyInstance) {
       .limit(MAX_ROWS)
       .all()
 
-    const columns = [
-      'publicationId', 'code', 'title', 'source', 'assignee', 'poster', 'platform', 'url',
-      'publishedAt', 'publishAt', 'views', 'likes', 'comments', 'shares', 'lastCheckedAt',
-    ]
-    return send(reply, q.format, 'publications', columns, rows)
+    const columns = [...IDENTITY_COLUMNS, 'publishedAt', 'publishAt', 'views', 'likes', 'comments', 'shares', 'lastCheckedAt']
+    return send(reply, q.format, 'publications', columns, identify(rows))
   })
 
   /** One row per metric snapshot, with the same identifying columns. */
@@ -145,10 +160,7 @@ export async function exportRoutes(app: FastifyInstance) {
       .limit(MAX_ROWS)
       .all()
 
-    const columns = [
-      'publicationId', 'code', 'title', 'source', 'assignee', 'poster', 'platform', 'url',
-      'takenAt', 'label', 'views', 'likes', 'comments', 'shares', 'extra',
-    ]
-    return send(reply, q.format, 'metrics', columns, rows)
+    const columns = [...IDENTITY_COLUMNS, 'takenAt', 'label', 'views', 'likes', 'comments', 'shares', 'extra']
+    return send(reply, q.format, 'metrics', columns, identify(rows))
   })
 }

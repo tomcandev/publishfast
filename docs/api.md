@@ -304,15 +304,18 @@ pending `releaseAt`, so a soft-archived item is not put straight back in the que
 ## Export — for analysis (read token, admin token or admin session)
 
 ### `GET /api/export/publications?since=<ISO>&assignee=<username>&format=<json|csv>`
-One row per publication: `publicationId, code, title, source, assignee, poster, platform, url,
-publishedAt, publishAt, views, likes, comments, shares, lastCheckedAt`. `since` filters on the
+One row per publication: `publicationId, code, title, captionFirstLine, hookId, source, assignee, poster,
+platform, url, publishedAt, publishAt, views, likes, comments, shares, lastCheckedAt`.
+`captionFirstLine` is the first non-empty line of the item's caption (the hook), trimmed, control and
+direction characters removed, at most 200 characters, `""` when there is no caption; `hookId` is the
+item's `hook_id`, `""` when none. `since` filters on the
 publication's `publishedAt` (or creation time). JSON is `{ rows: [...] }`.
 
 ### `GET /api/export/metrics?since=&assignee=&format=`
 One row per snapshot: the same identifying columns plus `takenAt, label, views, likes, comments,
 shares, extra`. `since` filters on `takenAt`.
 
-No emails, notes, captions, meta, asset paths or token data in either. Unknown `assignee` → `400`. In
+No emails, notes, full captions (only their first line), meta, asset paths or token data in either. Unknown `assignee` → `400`. In
 CSV, text starting with `= + - @` is prefixed with `'` so a spreadsheet does not run it.
 
 ## Drop box — temporary hand-over files (files token, ingest token for reads, admin token)

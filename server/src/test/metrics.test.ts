@@ -169,9 +169,10 @@ describe('GET /api/export/*', () => {
     assert.equal(res.statusCode, 200)
     const rows = res.json().rows
     const row = rows.find((r: { publicationId: string }) => r.publicationId === pubId)
-    assert.deepEqual(Object.keys(row).sort(), [
-      'assignee', 'code', 'comments', 'lastCheckedAt', 'likes', 'platform', 'poster', 'publicationId',
-      'publishAt', 'publishedAt', 'shares', 'source', 'title', 'url', 'views',
+    // Deliberately updated (2026-11-14): captionFirstLine and hookId identify the post's hook.
+    assert.deepEqual(Object.keys(row), [
+      'publicationId', 'code', 'title', 'captionFirstLine', 'hookId', 'source', 'assignee', 'poster', 'platform', 'url',
+      'publishedAt', 'publishAt', 'views', 'likes', 'comments', 'shares', 'lastCheckedAt',
     ])
     assert.equal(row.code, 'NHI-PTE-N14')
     assert.equal(row.assignee, owner.username)
@@ -189,7 +190,15 @@ describe('GET /api/export/*', () => {
     const csv = await call(app, 'GET', '/api/export/metrics?format=csv', { token: read })
     assert.equal(csv.statusCode, 200)
     assert.match(String(csv.headers['content-type']), /text\/csv/)
-    assert.equal(csv.body.split('\r\n')[0], 'publicationId,code,title,source,assignee,poster,platform,url,takenAt,label,views,likes,comments,shares,extra')
+    assert.equal(
+      csv.body.split('\r\n')[0],
+      'publicationId,code,title,captionFirstLine,hookId,source,assignee,poster,platform,url,takenAt,label,views,likes,comments,shares,extra',
+    )
+    const pubCsv = await call(app, 'GET', '/api/export/publications?format=csv', { token: read })
+    assert.equal(
+      pubCsv.body.split('\r\n')[0],
+      'publicationId,code,title,captionFirstLine,hookId,source,assignee,poster,platform,url,publishedAt,publishAt,views,likes,comments,shares,lastCheckedAt',
+    )
     assertClean(csv.body)
 
     const since = await call(app, 'GET', '/api/export/metrics?since=2026-06-01T00:00:00Z', { token: read })
@@ -199,6 +208,32 @@ describe('GET /api/export/*', () => {
     assert.equal((await call(app, 'GET', '/api/export/publications?assignee=nobody', { token: read })).statusCode, 400)
     assert.equal((await call(app, 'GET', '/api/export/publications?since=soon', { token: read })).statusCode, 400)
     assert.equal((await call(app, 'GET', '/api/export/publications?format=xml', { token: read })).statusCode, 400)
+  })
+
+  it('captionFirstLine is the first non-empty line, cleaned and capped; hookId is the item’s; never the rest of the caption', async () => {
+    const caption = '\n  \r\n  =Stop\u0007 practising\u202e full mocks  \nSECOND LINE stays private\nthird'
+    db.update(contents).set({ caption, hookId: 'h_mistake_01' }).where(eq(contents.id, contentId)).run()
+    for (const url of ['/api/export/publications', '/api/export/metrics']) {
+      const res = await call(app, 'GET', url, { token: read })
+      const row = res.json().rows.find((r: { publicationId: string }) => r.publicationId === pubId)
+      assert.equal(row.captionFirstLine, '=Stop practising full mocks')
+      assert.equal(row.hookId, 'h_mistake_01')
+      assert.ok(!res.body.includes('SECOND LINE'), `${url} leaked the rest of the caption`)
+      const csv = await call(app, 'GET', `${url}?format=csv`, { token: read })
+      assert.ok(csv.body.includes(`,'=Stop practising full mocks,h_mistake_01,`), 'the formula guard applies to the new column')
+      assert.ok(!csv.body.includes('SECOND LINE'))
+    }
+
+    db.update(contents).set({ caption: `${'x'.repeat(250)}\nmore`, hookId: '+cmd' }).where(eq(contents.id, contentId)).run()
+    let row = (await call(app, 'GET', '/api/export/publications', { token: read })).json().rows.find((r: { publicationId: string }) => r.publicationId === pubId)
+    assert.equal(row.captionFirstLine, 'x'.repeat(200))
+    const csv = await call(app, 'GET', '/api/export/publications?format=csv', { token: read })
+    assert.ok(csv.body.includes(`,'+cmd,`), 'hookId gets the formula guard too')
+
+    db.update(contents).set({ caption: null, hookId: null }).where(eq(contents.id, contentId)).run()
+    row = (await call(app, 'GET', '/api/export/publications', { token: read })).json().rows.find((r: { publicationId: string }) => r.publicationId === pubId)
+    assert.deepEqual([row.captionFirstLine, row.hookId], ['', ''])
+    db.update(contents).set({ caption: 'caption', hookId: null }).where(eq(contents.id, contentId)).run()
   })
 
   it('csv neutralises spreadsheet formulas in text', async () => {
