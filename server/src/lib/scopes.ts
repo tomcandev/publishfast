@@ -27,6 +27,12 @@ export const TOKEN_ROUTES: Record<string, { scopes: readonly NarrowScope[]; acti
   'POST /api/ingest/contents/:id/assets': { scopes: ['ingest'], action: 'ingest.upload' },
   'DELETE /api/ingest/contents/:id/assets/:assetId': { scopes: ['ingest'], action: 'ingest.asset.delete' },
   'POST /api/ingest/contents/:id/withdraw': { scopes: ['ingest'], action: 'ingest.withdraw' },
+  // uploads in parts (routes/uploads.ts)
+  'POST /api/ingest/contents/:id/uploads': { scopes: ['ingest'], action: 'ingest.upload.init' },
+  'PUT /api/ingest/contents/:id/uploads/:uploadId/parts/:n': { scopes: ['ingest'], action: 'ingest.upload.part' },
+  'GET /api/ingest/contents/:id/uploads/:uploadId': { scopes: ['ingest'] },
+  'POST /api/ingest/contents/:id/uploads/:uploadId/complete': { scopes: ['ingest'], action: 'ingest.upload.complete' },
+  'DELETE /api/ingest/contents/:id/uploads/:uploadId': { scopes: ['ingest'], action: 'ingest.upload.abort' },
   'DELETE /api/ingest/contents/:id': { scopes: ['ingest'], action: 'ingest.delete' },
 
   // poster: the queue routes its user could call in a browser

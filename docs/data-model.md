@@ -1,6 +1,6 @@
 # Data model
 
-Ten tables in one SQLite file. The schema is applied as idempotent DDL at
+Twelve tables in one SQLite file. The schema is applied as idempotent DDL at
 startup ([`server/src/db/migrate.ts`](../server/src/db/migrate.ts)) — there is no
 migration CLI to install or codegen step to run.
 
@@ -102,6 +102,14 @@ action, content_id, publication_id, ip`). Actions: `ingest.create`, `ingest.patc
 `ingest.withdraw`, `ingest.delete`, `ingest.asset.delete`, `claim`, `release`, `complete`,
 `publication.create`, `publication.delete`, `metrics`, `file.put`, `file.delete`; any other route as
 `METHOD /pattern`. Written by one hook in `app.ts`.
+
+## uploads · upload_parts
+
+Uploads in parts (large files through the tunnel): `uploads (id, content_id → contents cascade,
+token_id, name, size, part_size, parts, mime, sha256, created_at, asset_id)` and `upload_parts
+(upload_id → uploads cascade, n, size)`. Part bytes are in `DATA_DIR/upload-parts/<id>/<n>.part`.
+`asset_id` is set once on complete. Unfinished uploads (and completed rows) older than 24 hours, and
+unfinished uploads of items that left `DRAFT`, are swept by the scheduler.
 
 ## files
 

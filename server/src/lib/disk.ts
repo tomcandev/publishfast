@@ -1,8 +1,10 @@
 import { statfs } from 'node:fs/promises'
-import { Transform } from 'node:stream'
-import { and, eq, inArray, sql } from 'drizzle-orm'
+import { createWriteStream } from 'node:fs'
+import { Transform, type Readable } from 'node:stream'
+import { pipeline } from 'node:stream/promises'
+import { and, eq, inArray, isNull, sql } from 'drizzle-orm'
 import { db } from '../db/index.js'
-import { assets, contents } from '../db/schema.js'
+import { assets, contents, uploads } from '../db/schema.js'
 import { config } from './config.js'
 
 /** An error that carries the HTTP status the upload routes answer with. */
@@ -22,7 +24,10 @@ export async function belowFreeSpaceFloor(dir: string, incoming = 0) {
   return Number(s.bavail) * Number(s.bsize) - incoming < config.minFreeBytes
 }
 
-/** Bytes an ingest token holds in assets of its DRAFT and READY items. */
+/**
+ * Bytes an ingest token holds: assets of its DRAFT and READY items, plus the
+ * declared size of its unfinished uploads in parts (reserved at init).
+ */
 export function ingestBytesHeld(tokenId: string) {
   const row = db
     .select({ n: sql<number>`coalesce(sum(${assets.size}), 0)` })
@@ -30,7 +35,13 @@ export function ingestBytesHeld(tokenId: string) {
     .innerJoin(contents, eq(contents.id, assets.contentId))
     .where(and(eq(contents.createdByToken, tokenId), inArray(contents.status, ['DRAFT', 'READY'])))
     .get()
-  return Number(row?.n ?? 0)
+  const reserved = db
+    .select({ n: sql<number>`coalesce(sum(${uploads.size}), 0)` })
+    .from(uploads)
+    .innerJoin(contents, eq(contents.id, uploads.contentId))
+    .where(and(eq(contents.createdByToken, tokenId), isNull(uploads.assetId)))
+    .get()
+  return Number(row?.n ?? 0) + Number(reserved?.n ?? 0)
 }
 
 /** A pass-through that fails with `statusCode` once more than `limit` bytes went through it. */
@@ -44,4 +55,32 @@ export function byteLimit(limit: number, statusCode: number, message: string) {
     },
   })
   return Object.assign(stream, { bytes: () => seen })
+}
+
+/**
+ * Streams a request body through `limit` into a new file at `dest`. Unlike a
+ * plain pipeline, a limit or disk error does not destroy the request stream:
+ * it is unpiped and paused, so the route can still answer (413 with
+ * Connection: close) instead of the client seeing a reset connection. A
+ * client that aborts mid-way fails the write. The caller removes `dest` on
+ * any error.
+ */
+export async function writeLimited(source: Readable, limit: Transform, dest: string) {
+  const onError = (err: Error) => limit.destroy(err)
+  const onClose = () => {
+    if (!source.readableEnded) limit.destroy(httpError(400, 'Upload aborted'))
+  }
+  source.once('error', onError)
+  source.once('close', onClose)
+  source.pipe(limit)
+  try {
+    await pipeline(limit, createWriteStream(dest, { flags: 'wx' }))
+  } catch (err) {
+    source.unpipe(limit)
+    source.pause()
+    throw err
+  } finally {
+    source.off('error', onError)
+    source.off('close', onClose)
+  }
 }

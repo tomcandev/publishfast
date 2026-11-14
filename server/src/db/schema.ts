@@ -207,6 +207,47 @@ export const files = sqliteTable(
   (t) => [uniqueIndex('files_key_unique').on(t.key), index('files_expires_idx').on(t.expiresAt)],
 )
 
+/**
+ * An upload in parts (contract section 12): a large file sent as several
+ * requests of at most part_size bytes, so no request body reaches the
+ * tunnel's 100 MB limit. Parts live in DATA_DIR/upload-parts/<id>/<n>.part,
+ * all server-made names. Unfinished uploads are swept after 24 hours.
+ */
+export const uploads = sqliteTable(
+  'uploads',
+  {
+    id: text('id').primaryKey(),
+    contentId: text('content_id')
+      .notNull()
+      .references(() => contents.id, { onDelete: 'cascade' }),
+    /** Token that started it (no FK). */
+    tokenId: text('token_id'),
+    name: text('name').notNull(),
+    size: integer('size').notNull(),
+    partSize: integer('part_size').notNull(),
+    parts: integer('parts').notNull(),
+    mime: text('mime'),
+    /** Declared sha256 (hex), checked on complete. */
+    sha256: text('sha256'),
+    createdAt: text('created_at').notNull().default(now),
+    /** Set once: the asset the upload became. Completing again answers it. */
+    assetId: text('asset_id'),
+  },
+  (t) => [index('uploads_content_idx').on(t.contentId), index('uploads_created_idx').on(t.createdAt)],
+)
+
+export const uploadParts = sqliteTable(
+  'upload_parts',
+  {
+    uploadId: text('upload_id')
+      .notNull()
+      .references(() => uploads.id, { onDelete: 'cascade' }),
+    n: integer('n').notNull(),
+    size: integer('size').notNull(),
+  },
+  (t) => [uniqueIndex('upload_parts_unique').on(t.uploadId, t.n)],
+)
+
 /** Audit trail: one row per state-changing call made with an API token. */
 export const tokenEvents = sqliteTable(
   'token_events',
@@ -264,6 +305,7 @@ export type ApiToken = typeof apiTokens.$inferSelect
 export type MetricSnapshot = typeof metricSnapshots.$inferSelect
 export type TokenEvent = typeof tokenEvents.$inferSelect
 export type StoredFile = typeof files.$inferSelect
+export type Upload = typeof uploads.$inferSelect
 export type ReminderSettings = typeof reminderSettings.$inferSelect
 export type PushSubscriptionRow = typeof pushSubscriptions.$inferSelect
 

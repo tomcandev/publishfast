@@ -7,7 +7,7 @@ import { and, asc, eq, gt, sql } from 'drizzle-orm'
 import { db } from '../db/index.js'
 import { files, type StoredFile } from '../db/schema.js'
 import { config } from '../lib/config.js'
-import { NO_SPACE, belowFreeSpaceFloor } from '../lib/disk.js'
+import { NO_SPACE, belowFreeSpaceFloor, writeLimited } from '../lib/disk.js'
 import { sendFileHeaders } from '../lib/download.js'
 import { isValidFileKey, removeStoredFile, storedFilePath } from '../lib/files.js'
 import { requireFileToken } from '../lib/guards.js'
@@ -115,7 +115,7 @@ export async function fileRoutes(app: FastifyInstance) {
 
     try {
       const body = (req.body as Readable | undefined) ?? Readable.from([])
-      await pipeline(body, meter, createWriteStream(abs, { flags: 'wx' }))
+      await writeLimited(body, meter, abs)
     } catch (err) {
       await removeStoredFile(storedPath)
       const status = (err as { statusCode?: number }).statusCode ?? 400

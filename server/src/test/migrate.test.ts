@@ -91,6 +91,8 @@ describe('migrate() on a database from main@0c7a5bd', () => {
     assert.ok(columns('metric_snapshots').includes('extra'))
     assert.ok(columns('token_events').includes('action'))
     assert.ok(columns('files').includes('stored_path'))
+    assert.ok(columns('uploads').includes('part_size'))
+    assert.ok(columns('upload_parts').includes('n'))
   })
 
   it('keeps every old row and value; new columns are NULL or their default', () => {

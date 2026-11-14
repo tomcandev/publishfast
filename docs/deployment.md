@@ -138,7 +138,8 @@ curl -s http://127.0.0.1:8055/api/health   # {"ok":true}
 The server process now also runs the **release scheduler**: every 60 seconds it
 moves `DRAFT` items whose `release_at` has passed to `READY` (one
 compare-and-swap UPDATE, logged as "Release scheduler: released N draft(s)")
-and deletes expired drop-box files. It never touches drafts without
+and deletes expired drop-box files and uploads in parts left unfinished for 24
+hours (`DATA_DIR/upload-parts/`). It never touches drafts without
 `release_at`.
 
 ## Tokens
@@ -184,7 +185,8 @@ machine over a secure channel and delete it here.
 | `DATA_DIR` | `./data` | database and uploads |
 | `PUBLIC_URL` | `http://localhost:8055` | used for absolute links |
 | `MAX_UPLOAD_BYTES` | `536870912` (512 MB) | per file |
-| `MAX_FILE_BYTES` | `209715200` (200 MB) | per drop-box file (`PUT /api/files/<key>`) |
+| `MAX_FILE_BYTES` | `94371840` (90 MB) | per drop-box file (`PUT /api/files/<key>`); keep under Cloudflare's 100 MB request limit |
+| `UPLOAD_PART_BYTES` | `33554432` (32 MB) | part size for uploads in parts |
 | `MAX_FILES_PREFIX_BYTES` | `2147483648` (2 GB) | drop box: total under one token prefix; admin tokens exempt |
 | `MAX_INGEST_BYTES` | `5368709120` (5 GB) | total DRAFT+READY media one ingest-scope token may hold; admin tokens exempt |
 | `MIN_FREE_BYTES` | `2147483648` (2 GB) | uploads (all callers) answer `507` when they would leave less free disk |

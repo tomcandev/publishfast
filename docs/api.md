@@ -205,6 +205,24 @@ Delete one asset, or the whole item with its files. `DRAFT` only (`409` otherwis
 deletes answer `409` with `reason: "has_publications"` when the item has any published link, so links
 and metric history are never erased.
 
+### Uploads in parts — for files over 32 MB
+
+Cloudflare (in front of the server) refuses request bodies over 100 MB, so large files go in parts.
+Ingest-scope tokens on their own `DRAFT` item, and admin tokens (old ones included); not sessions.
+
+| route | what |
+|---|---|
+| `POST /api/ingest/contents/:id/uploads` | JSON `{name, size, mime?, sha256?}` → `201 {uploadId, partSize, parts}`. `partSize` is `UPLOAD_PART_BYTES` (32 MB); `parts` = ceil(size / partSize). The declared size is checked against the per-file cap (`413`), the token's total (`413`) and the free-space floor (`507`) before any byte. `name`: 1–255 chars, no `/ \` or control characters; svg/html/xml refused for scoped tokens |
+| `PUT …/uploads/:uploadId/parts/:n` | raw body (`Content-Type: application/octet-stream`), `n` from 1, at most `partSize` bytes (`413`; the last part may be shorter) → `{part, size}`. Sending a part again replaces it; any order |
+| `GET …/uploads/:uploadId` | `{uploadId, name, size, partSize, parts, received: [n…], completed}` — to resume |
+| `POST …/uploads/:uploadId/complete` | every part there and sizes add up, else `409 {missing, receivedBytes}`; joins them in order while hashing; a declared `sha256` that does not match → `422` and nothing is kept; creates the asset exactly as the multipart route (type and mime rules, sort order) → `201 {asset}`. Completing again answers the same asset |
+| `DELETE …/uploads/:uploadId` | abort: deletes the parts |
+
+Parts live under server-made names (`DATA_DIR/upload-parts/<uploadId>/<n>.part`); nothing the client
+sends becomes a path. Unfinished uploads count toward the token's total, are deleted when the item
+leaves `DRAFT` or is deleted, and are swept (rows and bytes) after 24 hours. Another token's upload or
+item answers `404`; a non-draft `409`.
+
 **Disk limits.** Every upload answers `507` when it would leave less than `MIN_FREE_BYTES` free. An
 ingest-scope token may hold at most `MAX_INGEST_BYTES` of media in its `DRAFT` and `READY` items
 (`413` beyond). A failed, oversize or aborted upload leaves no bytes and no rows behind.
@@ -286,7 +304,7 @@ all answer `404` (never `403`). Sessions are not used here.
 
 | route | who | what |
 |---|---|---|
-| `PUT /api/files/<key>` | `files`, admin | raw request body, streamed to disk, max `MAX_FILE_BYTES` (default 200 MB, `413` beyond, nothing kept). Header `X-Expires-Days` 1–30, default 7. Replaces an existing key (old bytes deleted). `201` (new) / `200` (replaced) `{ key, size, sha256, expiresAt }` |
+| `PUT /api/files/<key>` | `files`, admin | raw request body, streamed to disk, max `MAX_FILE_BYTES` (default 90 MB, under the tunnel's 100 MB limit; `413` beyond, nothing kept). Header `X-Expires-Days` 1–30, default 7. Replaces an existing key (old bytes deleted). `201` (new) / `200` (replaced) `{ key, size, sha256, expiresAt }` |
 | `GET /api/files/<key>` | `files`, `ingest`, admin | the bytes, with `X-Sha256` and `X-Expires-At` |
 | `HEAD /api/files/<key>` | same | the headers only: `Content-Length`, `X-Sha256`, `X-Expires-At` |
 | `DELETE /api/files/<key>` | `files`, admin | delete now |

@@ -14,6 +14,7 @@ import { classifyUpload, isActiveContent } from '../lib/download.js'
 import { META_MAX_BYTES, isoTime, jsonObject } from '../lib/fields.js'
 import { requireIngest } from '../lib/guards.js'
 import { stripTokenIds } from '../lib/holds.js'
+import { discardUploads } from '../lib/uploads.js'
 
 import { inferHookId } from '../lib/metrics.js'
 
@@ -253,7 +254,10 @@ export async function ingestRoutes(app: FastifyInstance) {
       }
       throw err
     }
-    return { content: stripTokenIds(db.select().from(contents).where(eq(contents.id, id)).get()!) }
+    const updated = db.select().from(contents).where(eq(contents.id, id)).get()!
+    // Released (or otherwise out of DRAFT): its unfinished uploads in parts go.
+    if (updated.status !== 'DRAFT') await discardUploads(id)
+    return { content: stripTokenIds(updated) }
   })
 
   /**
@@ -439,6 +443,7 @@ export async function ingestRoutes(app: FastifyInstance) {
       return reply.code(404).send({ error: 'Not found' })
     }
     const assetRows = db.select({ filePath: assets.filePath }).from(assets).where(eq(assets.contentId, id)).all()
+    if (content.status === 'DRAFT' && !hasPublications(id)) await discardUploads(id)
     // Only a DRAFT, checked inside the DELETE (asset rows go with it by cascade).
     const result = db
       .delete(contents)

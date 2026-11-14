@@ -160,6 +160,28 @@ const statements = [
     created_by_token TEXT
   )`,
   `CREATE UNIQUE INDEX IF NOT EXISTS files_key_unique ON files (key)`,
+
+  `CREATE TABLE IF NOT EXISTS uploads (
+    id TEXT PRIMARY KEY,
+    content_id TEXT NOT NULL REFERENCES contents(id) ON DELETE CASCADE,
+    token_id TEXT,
+    name TEXT NOT NULL,
+    size INTEGER NOT NULL,
+    part_size INTEGER NOT NULL,
+    parts INTEGER NOT NULL,
+    mime TEXT,
+    sha256 TEXT,
+    created_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ','now')),
+    asset_id TEXT
+  )`,
+  `CREATE INDEX IF NOT EXISTS uploads_content_idx ON uploads (content_id)`,
+  `CREATE INDEX IF NOT EXISTS uploads_created_idx ON uploads (created_at)`,
+  `CREATE TABLE IF NOT EXISTS upload_parts (
+    upload_id TEXT NOT NULL REFERENCES uploads(id) ON DELETE CASCADE,
+    n INTEGER NOT NULL,
+    size INTEGER NOT NULL
+  )`,
+  `CREATE UNIQUE INDEX IF NOT EXISTS upload_parts_unique ON upload_parts (upload_id, n)`,
   `CREATE INDEX IF NOT EXISTS files_expires_idx ON files (expires_at)`,
 
   `CREATE TABLE IF NOT EXISTS reminder_settings (

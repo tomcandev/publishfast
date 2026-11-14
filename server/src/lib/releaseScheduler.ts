@@ -2,6 +2,7 @@ import { and, eq, isNotNull, lte } from 'drizzle-orm'
 import { db } from '../db/index.js'
 import { contents } from '../db/schema.js'
 import { sweepExpiredFiles } from './files.js'
+import { sweepUploads } from './uploads.js'
 
 let intervalTimer: NodeJS.Timeout | null = null
 
@@ -38,6 +39,13 @@ async function runOnce() {
     if (removed > 0) console.log(`Release scheduler: deleted ${removed} expired file(s)`)
   } catch (err) {
     console.warn('Error sweeping expired files:', err)
+  }
+  // ...and uploads in parts left unfinished for 24 hours (section 12).
+  try {
+    const removed = await sweepUploads()
+    if (removed > 0) console.log(`Release scheduler: removed ${removed} unfinished or stale upload(s)`)
+  } catch (err) {
+    console.warn('Error sweeping uploads:', err)
   }
 }
 

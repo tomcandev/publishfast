@@ -25,8 +25,12 @@ export const config = {
   /** Drop box bytes (routes/files.ts), kept apart from content uploads. */
   filesDir: join(dataDir, 'files'),
   maxUploadBytes: Number(process.env.MAX_UPLOAD_BYTES ?? 536_870_912),
-  /** Per drop-box file. */
-  maxFileBytes: Number(process.env.MAX_FILE_BYTES ?? 209_715_200),
+  /** Per drop-box file. Under Cloudflare's 100 MB request limit, so no key can be refused by the tunnel. */
+  maxFileBytes: Number(process.env.MAX_FILE_BYTES ?? 90 * 1024 ** 2),
+  /** Part size for uploads in parts (routes/uploads.ts): each request stays far under 100 MB. */
+  uploadPartBytes: Number(process.env.UPLOAD_PART_BYTES ?? 32 * 1024 ** 2),
+  /** Unfinished part uploads, one folder per upload. */
+  partsDir: join(dataDir, 'upload-parts'),
   /** Drop box: total bytes under one token prefix (admin-power tokens exempt). */
   maxFilesPrefixBytes: Number(process.env.MAX_FILES_PREFIX_BYTES ?? 2 * 1024 ** 3),
   /** Total bytes of DRAFT+READY assets one ingest-scope token may hold. */
@@ -50,7 +54,7 @@ export const config = {
 }
 
 export function ensureDataDirs() {
-  for (const dir of [config.dataDir, config.uploadsDir, config.filesDir]) {
+  for (const dir of [config.dataDir, config.uploadsDir, config.filesDir, config.partsDir]) {
     if (!existsSync(dir)) mkdirSync(dir, { recursive: true })
   }
 }

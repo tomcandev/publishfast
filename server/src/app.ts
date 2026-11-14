@@ -17,6 +17,7 @@ import { ingestRoutes } from './routes/ingest.js'
 import { notificationRoutes } from './routes/notifications.js'
 import { publicationMetricRoutes } from './routes/publicationMetrics.js'
 import { publicationRoutes } from './routes/publications.js'
+import { uploadRoutes } from './routes/uploads.js'
 
 /**
  * Builds the Fastify app without listening, so tests can drive it with
@@ -58,6 +59,7 @@ export async function buildApp(
   await app.register(publicationMetricRoutes)
   await app.register(exportRoutes)
   await app.register(fileRoutes)
+  await app.register(uploadRoutes)
 
   app.get('/api/health', async () => ({ ok: true }))
 
