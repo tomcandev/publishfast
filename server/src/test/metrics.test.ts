@@ -70,10 +70,13 @@ describe('POST/GET /api/publications/:id/metrics', () => {
       views: 120,
       likes: 9,
       comments: 2,
+      saves: 14,
       extra: { avgViewDurationSec: 31.5, ctr: 0.062, trafficSources: { browse: 0.4 } },
     })
     assert.equal(res.statusCode, 201)
     assert.equal(res.json().snapshot.label, '24h')
+    assert.equal(res.json().snapshot.saves, 14)
+    assert.equal(res.json().publication.saves, 14)
     assert.equal(res.json().snapshot.tokenId, undefined)
     const pub = db.select().from(publications).where(eq(publications.id, pubId)).get()!
     assert.equal(pub.views, 120)
@@ -106,6 +109,8 @@ describe('POST/GET /api/publications/:id/metrics', () => {
       { label: 'x'.repeat(21) },
       { views: -1 },
       { views: 1.5 },
+      { saves: -1 },
+      { saves: 'many' },
       { extra: [1, 2] },
       { extra: { big: 'x'.repeat(17 * 1024) } },
       { takenAt: 'yesterday' },
@@ -172,8 +177,9 @@ describe('GET /api/export/*', () => {
     // Deliberately updated (2026-11-14): captionFirstLine and hookId identify the post's hook.
     assert.deepEqual(Object.keys(row), [
       'publicationId', 'code', 'title', 'captionFirstLine', 'hookId', 'source', 'assignee', 'poster', 'platform', 'url',
-      'publishedAt', 'publishAt', 'views', 'likes', 'comments', 'shares', 'lastCheckedAt',
+      'publishedAt', 'publishAt', 'views', 'likes', 'comments', 'shares', 'saves', 'lastCheckedAt',
     ])
+    assert.equal(row.saves, 14, 'deliberately updated again (review 2): saves after shares')
     assert.equal(row.code, 'NHI-PTE-N14')
     assert.equal(row.assignee, owner.username)
     assert.equal(row.poster, owner.username)
@@ -192,12 +198,12 @@ describe('GET /api/export/*', () => {
     assert.match(String(csv.headers['content-type']), /text\/csv/)
     assert.equal(
       csv.body.split('\r\n')[0],
-      'publicationId,code,title,captionFirstLine,hookId,source,assignee,poster,platform,url,takenAt,label,views,likes,comments,shares,extra',
+      'publicationId,code,title,captionFirstLine,hookId,source,assignee,poster,platform,url,takenAt,label,views,likes,comments,shares,saves,extra',
     )
     const pubCsv = await call(app, 'GET', '/api/export/publications?format=csv', { token: read })
     assert.equal(
       pubCsv.body.split('\r\n')[0],
-      'publicationId,code,title,captionFirstLine,hookId,source,assignee,poster,platform,url,publishedAt,publishAt,views,likes,comments,shares,lastCheckedAt',
+      'publicationId,code,title,captionFirstLine,hookId,source,assignee,poster,platform,url,publishedAt,publishAt,views,likes,comments,shares,saves,lastCheckedAt',
     )
     assertClean(csv.body)
 

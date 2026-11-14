@@ -80,6 +80,7 @@ export function recordSighting(
         videoAuthor: parsed.author,
         plays: parsed.plays,
         likes: parsed.likes,
+        saves: parsed.saves,
         postedAt: parsed.postedAt,
         seenAt: nowIso,
         ...(keepListing

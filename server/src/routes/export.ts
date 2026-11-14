@@ -115,6 +115,7 @@ export async function exportRoutes(app: FastifyInstance) {
         likes: publications.likes,
         comments: publications.comments,
         shares: publications.shares,
+        saves: publications.saves,
         lastCheckedAt: publications.lastCheckedAt,
       })
       .from(publications)
@@ -126,7 +127,7 @@ export async function exportRoutes(app: FastifyInstance) {
       .limit(MAX_ROWS)
       .all()
 
-    const columns = [...IDENTITY_COLUMNS, 'publishedAt', 'publishAt', 'views', 'likes', 'comments', 'shares', 'lastCheckedAt']
+    const columns = [...IDENTITY_COLUMNS, 'publishedAt', 'publishAt', 'views', 'likes', 'comments', 'shares', 'saves', 'lastCheckedAt']
     return send(reply, q.format, 'publications', columns, identify(rows))
   })
 
@@ -148,6 +149,7 @@ export async function exportRoutes(app: FastifyInstance) {
         likes: metricSnapshots.likes,
         comments: metricSnapshots.comments,
         shares: metricSnapshots.shares,
+        saves: metricSnapshots.saves,
         extra: metricSnapshots.extra,
       })
       .from(metricSnapshots)
@@ -160,7 +162,7 @@ export async function exportRoutes(app: FastifyInstance) {
       .limit(MAX_ROWS)
       .all()
 
-    const columns = [...IDENTITY_COLUMNS, 'takenAt', 'label', 'views', 'likes', 'comments', 'shares', 'extra']
+    const columns = [...IDENTITY_COLUMNS, 'takenAt', 'label', 'views', 'likes', 'comments', 'shares', 'saves', 'extra']
     return send(reply, q.format, 'metrics', columns, identify(rows))
   })
 }

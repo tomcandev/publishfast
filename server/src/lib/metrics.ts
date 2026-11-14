@@ -23,6 +23,8 @@ export interface MetricResult {
   error: string | null
   /** TikTok only: the post's sound, when the page (or tikwm) named one. */
   sound?: ParsedSound | null
+  /** TikTok only: the save count (collectCount), when it was read. */
+  saves?: number | null
 }
 
 export interface HookPerformanceItem {
@@ -150,6 +152,7 @@ async function readTikwm(target: URL) {
         digg_count?: number
         comment_count?: number
         share_count?: number
+        collect_count?: number
         music_info?: unknown
       }
     }
@@ -174,7 +177,8 @@ async function fetchTikTokMetrics(url: string): Promise<MetricResult> {
   } catch (err) {
     if (err instanceof TikTokFetchError) pageError = err.message
   }
-  const fromPage = page ? parseTikTokVideoPage(page.body)?.sound ?? null : null
+  const parsed = page ? parseTikTokVideoPage(page.body) : null
+  const fromPage = parsed?.sound ?? null
 
   // 1. The public tikwm endpoint (supports both video and photo/carousel URLs)
   const tikwm = await readTikwm(new URL(page?.url ?? allowed.href))
@@ -186,6 +190,7 @@ async function fetchTikTokMetrics(url: string): Promise<MetricResult> {
       shares: Number(tikwm.share_count) || 0,
       error: null,
       sound: fromPage ?? soundOf(tikwm.music_info),
+      saves: typeof tikwm.collect_count === 'number' && Number.isSafeInteger(tikwm.collect_count) ? tikwm.collect_count : (parsed?.saves ?? null),
     }
   }
 
@@ -211,6 +216,8 @@ async function fetchTikTokMetrics(url: string): Promise<MetricResult> {
   const shareMatch = html.match(/"shareCount":\s*(\d+)/)
   if (shareMatch) shares = parseInt(shareMatch[1]!, 10)
 
+  const saveMatch = html.match(/"collectCount":\s*(\d+)/)
+
   return {
     views,
     likes,
@@ -218,6 +225,7 @@ async function fetchTikTokMetrics(url: string): Promise<MetricResult> {
     shares,
     error: null,
     sound: fromPage,
+    saves: parsed?.saves ?? (saveMatch ? parseInt(saveMatch[1]!, 10) : null),
   }
 }
 
@@ -276,6 +284,8 @@ export async function syncAllPublicationMetrics(): Promise<{
       likes: metrics.likes > 0 ? metrics.likes : pub.likes,
       comments: metrics.comments > 0 ? metrics.comments : pub.comments,
       shares: metrics.shares > 0 ? metrics.shares : pub.shares,
+      // Same rule as the other counts: a reading of 0 or none keeps the last one.
+      saves: typeof metrics.saves === 'number' && metrics.saves > 0 ? metrics.saves : pub.saves,
     }
     // The post's TikTok sound, when the page named one; a page without one leaves the old value.
     const sound = !metrics.error && metrics.sound ? metrics.sound : null

@@ -10,6 +10,7 @@ export type SnapshotInput = {
   likes?: number | null
   comments?: number | null
   shares?: number | null
+  saves?: number | null
   extra?: Record<string, unknown> | null
   tokenId?: string | null
 }
@@ -34,6 +35,7 @@ export function recordSnapshot(pub: Publication, input: SnapshotInput) {
         likes: input.likes ?? null,
         comments: input.comments ?? null,
         shares: input.shares ?? null,
+        saves: input.saves ?? null,
         extra: input.extra ?? null,
         tokenId: input.tokenId ?? null,
       })
@@ -42,7 +44,7 @@ export function recordSnapshot(pub: Publication, input: SnapshotInput) {
     const current = tx.select().from(publications).where(eq(publications.id, pub.id)).get()
     if (current && (!current.lastCheckedAt || input.takenAt >= current.lastCheckedAt)) {
       const latest: Partial<Publication> = { lastCheckedAt: input.takenAt }
-      for (const key of ['views', 'likes', 'comments', 'shares'] as const) {
+      for (const key of ['views', 'likes', 'comments', 'shares', 'saves'] as const) {
         const value = input[key]
         if (typeof value === 'number') latest[key] = value
       }

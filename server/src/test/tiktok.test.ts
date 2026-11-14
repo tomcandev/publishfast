@@ -28,7 +28,7 @@ describe('the TikTok page parser', () => {
     assert.deepEqual(v.sound, { id: '7300000000000000201', title: 'Lofi Study Loop', author: 'Example Band', original: false })
     assert.equal(v.videoId, '7400000000000000101')
     assert.equal(v.author, 'example.creator')
-    assert.deepEqual([v.plays, v.likes, v.comments, v.shares], [98765, 4321, 34, 12])
+    assert.deepEqual([v.plays, v.likes, v.comments, v.shares, v.saves], [98765, 4321, 34, 12, 210])
     assert.equal(v.postedAt, '2024-11-13T00:00:00.000Z')
   })
 

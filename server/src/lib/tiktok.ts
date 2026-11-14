@@ -49,6 +49,8 @@ export type ParsedVideo = {
   likes: number | null
   comments: number | null
   shares: number | null
+  /** TikTok's collectCount: how many people saved the video. */
+  saves: number | null
   postedAt: string | null
 }
 
@@ -162,6 +164,7 @@ export function parseTikTokVideoPage(html: string): ParsedVideo | null {
     likes: countOf(stats.diggCount, statsV2.diggCount),
     comments: countOf(stats.commentCount, statsV2.commentCount),
     shares: countOf(stats.shareCount, statsV2.shareCount),
+    saves: countOf(stats.collectCount, statsV2.collectCount),
     postedAt: postedAtOf(item.createTime),
   }
 }

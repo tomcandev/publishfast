@@ -83,6 +83,8 @@ updates the existing row rather than creating a duplicate.
 This is what supports the core requirement: one KOL takes one content item and
 posts it to several platforms, pasting a separate link back for each.
 
+`saves` (nullable): the latest save count (TikTok's `collectCount`), from the sync or a posted reading.
+
 `sound_id`, `sound_title`, `sound_author`, `sound_original` (all nullable): the TikTok sound of the
 post, filled by the public-count sync from the video page it reads (a page without a sound leaves them
 as they were).
@@ -90,7 +92,7 @@ as they were).
 ## metric_snapshots
 
 One row per metric reading of a publication: `publication_id` (cascade), `taken_at`, `label`
-(`24h`, `7d`, `28d`, `daily`, `auto`), nullable `views`, `likes`, `comments`, `shares`, `extra`
+(`24h`, `7d`, `28d`, `daily`, `auto`), nullable `views`, `likes`, `comments`, `shares`, `saves`, `extra`
 (JSON ≤ 16 KB), `created_at`, `token_id` (the token that wrote it, no FK). A reading at least as new
 as the publication's `last_checked_at` also becomes its latest counts.
 
@@ -143,7 +145,7 @@ sighting's time, or our post's publication time), `status` (`active` | `hidden`)
 
 `sound_sightings`: one row per video outside our own posts: `id`, `sound_id` (→ sounds, cascade),
 `video_url` (unique; the canonical `https://www.tiktok.com/@user/video/<id>` the server read), `video_author`,
-`plays`, `likes`, `posted_at`, `source` (`trend` | `viral` | `manual`), `region` (2 letters), `rank` (its place
+`plays`, `likes`, `saves`, `posted_at`, `source` (`trend` | `viral` | `manual`), `region` (2 letters), `rank` (its place
 in a trending list), `seen_at`, `token_id` (no FK; `NULL` for a person's paste). Reporting the same video again
 refreshes its counts, sound and `seen_at`, and the `source`/`region`/`rank` the new call gave.
 

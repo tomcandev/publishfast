@@ -48,6 +48,8 @@ export interface Publication {
   likes?: number
   comments?: number
   shares?: number
+  /** TikTok's save count, when read or sent. */
+  saves?: number | null
   lastCheckedAt?: string | null
   metricError?: string | null
   soundId?: string | null

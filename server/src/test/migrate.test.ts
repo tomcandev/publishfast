@@ -95,6 +95,7 @@ describe('migrate() on a database from main@0c7a5bd', () => {
     assert.ok(columns('upload_parts').includes('n'))
     assert.ok(columns('assets').includes('pruned_at'))
     assert.ok(columns('contents').includes('assign_expires_at'))
+    for (const t of ['publications', 'metric_snapshots', 'sound_sightings']) assert.ok(columns(t).includes('saves'), `${t}.saves`)
     for (const c of ['sound_id', 'sound_title', 'sound_author', 'sound_original']) {
       assert.ok(columns('publications').includes(c), c)
     }

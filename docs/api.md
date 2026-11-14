@@ -137,17 +137,18 @@ The publication's owner (session or poster token), an admin session or an admin 
 
 ```json
 { "takenAt": "2026-11-29T13:00:00Z", "label": "24h", "views": 812, "likes": 40, "comments": 3,
-  "extra": { "avgViewDurationSec": 31.5, "ctr": 0.062 } }
+  "saves": 25, "extra": { "avgViewDurationSec": 31.5, "ctr": 0.062 } }
 ```
 
-All fields optional. `label` ≤ 20 chars (`24h`, `7d`, `28d`, `daily`); `extra` a JSON object ≤ 16 KB;
+All fields optional; counts (`views`, `likes`, `comments`, `shares`, `saves`) are whole numbers ≥ 0. `label` ≤ 20 chars (`24h`, `7d`, `28d`, `daily`); `extra` a JSON object ≤ 16 KB;
 `takenAt` defaults to now and may not be in the future. Stores a row in `metric_snapshots` and, when the
 reading is at least as new as the publication's `lastCheckedAt`, makes its counts the publication's
 latest. Returns `201 { snapshot, publication }`. Anyone else gets `404`.
 
 ### `GET /api/publications/:id/metrics`
 Same access. `{ publication, snapshots }`, oldest first. The automatic public-count sync adds a
-snapshot labelled `auto` each time it reads fresh counts.
+snapshot labelled `auto` each time it reads fresh counts, with TikTok's save count (`collectCount`) as
+`saves`. Publications in content responses carry their latest `saves` (`null` until one was read or sent).
 
 ---
 
@@ -324,7 +325,7 @@ failed item; a claim that lands first wins. The queue shows the assignee "yours 
 
 ### `GET /api/export/publications?since=<ISO>&assignee=<username>&format=<json|csv>`
 One row per publication: `publicationId, code, title, captionFirstLine, hookId, source, assignee, poster,
-platform, url, publishedAt, publishAt, views, likes, comments, shares, lastCheckedAt`.
+platform, url, publishedAt, publishAt, views, likes, comments, shares, saves, lastCheckedAt`.
 `captionFirstLine` is the first non-empty line of the item's caption (the hook), trimmed, control and
 direction characters removed, at most 200 characters, `""` when there is no caption; `hookId` is the
 item's `hook_id`, `""` when none. `since` filters on the
@@ -332,7 +333,7 @@ publication's `publishedAt` (or creation time). JSON is `{ rows: [...] }`.
 
 ### `GET /api/export/metrics?since=&assignee=&format=`
 One row per snapshot: the same identifying columns plus `takenAt, label, views, likes, comments,
-shares, extra`. `since` filters on `takenAt`.
+shares, saves, extra`. `since` filters on `takenAt`.
 
 No emails, notes, full captions (only their first line), meta, asset paths or token data in either. Unknown `assignee` → `400`. In
 CSV, text starting with `= + - @` is prefixed with `'` so a spreadsheet does not run it.

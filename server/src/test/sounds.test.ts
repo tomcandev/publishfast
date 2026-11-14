@@ -17,7 +17,7 @@ import { eq } from 'drizzle-orm'
 import { buildApp } from '../app.js'
 import { db, sqlite } from '../db/index.js'
 import { migrate } from '../db/migrate.js'
-import { apiTokens, publications, soundSightings, sounds, tokenEvents } from '../db/schema.js'
+import { apiTokens, metricSnapshots, publications, soundSightings, sounds, tokenEvents } from '../db/schema.js'
 import { createApiToken } from '../lib/auth.js'
 import { syncAllPublicationMetrics } from '../lib/metrics.js'
 import { DAILY_PASTES, DAILY_SIGHTINGS, _clearRankingCache, _resetDailyCaps, _useDaily, rankSounds, rankSoundsCached } from '../lib/sounds.js'
@@ -125,7 +125,7 @@ describe('POST /api/sounds/sightings', () => {
 
     const s1 = db.select().from(soundSightings).where(eq(soundSightings.soundId, TRACK_ID)).get()!
     assert.equal(s1.videoUrl, TRACK_URL)
-    assert.deepEqual([s1.plays, s1.likes, s1.source, s1.region, s1.rank, s1.videoAuthor], [98765, 4321, 'trend', 'AU', 3, 'example.creator'])
+    assert.deepEqual([s1.plays, s1.likes, s1.saves, s1.source, s1.region, s1.rank, s1.videoAuthor], [98765, 4321, 210, 'trend', 'AU', 3, 'example.creator'])
     assert.ok(s1.tokenId)
     const s2 = db.select().from(soundSightings).where(eq(soundSightings.soundId, ORIGINAL_ID)).get()!
     assert.equal(s2.videoUrl, ORIGINAL_CANONICAL, 'the short link is stored as the canonical video URL')
@@ -398,6 +398,11 @@ describe('the public-count sync fills the publication’s sound', () => {
     const p = db.select().from(publications).where(eq(publications.id, id)).get()!
     assert.deepEqual([p.soundId, p.soundTitle, p.soundAuthor, p.soundOriginal], [TRACK_ID, 'Lofi Study Loop', 'Example Band', false])
     assert.equal(p.views, 98765, 'tikwm had nothing; the counts come from the same page')
+    // Saves: the experiments are judged on save rate.
+    assert.equal(p.saves, 210)
+    const snap = db.select().from(metricSnapshots).where(eq(metricSnapshots.publicationId, id)).all()
+    assert.equal(snap.length, 1)
+    assert.deepEqual([snap[0]!.label, snap[0]!.views, snap[0]!.saves], ['auto', 98765, 210])
     const s = db.select().from(sounds).where(eq(sounds.id, TRACK_ID)).get()!
     assert.equal(s.lastSeenAt, postedAt)
     assert.ok(requested.every((u) => TIKTOK_HOSTS.has(new URL(u).hostname) || u.startsWith('https://www.tikwm.com/')))

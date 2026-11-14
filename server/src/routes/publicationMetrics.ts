@@ -16,6 +16,7 @@ const snapshotSchema = z.object({
   likes: count.optional(),
   comments: count.optional(),
   shares: count.optional(),
+  saves: count.optional(),
   extra: jsonObject(EXTRA_MAX_BYTES, 'extra').optional(),
 })
 

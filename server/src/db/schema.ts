@@ -130,6 +130,8 @@ export const publications = sqliteTable(
     likes: integer('likes').notNull().default(0),
     comments: integer('comments').notNull().default(0),
     shares: integer('shares').notNull().default(0),
+    /** Latest save count (TikTok's collectCount); NULL until one was read or sent. */
+    saves: integer('saves'),
     lastCheckedAt: text('last_checked_at'),
     metricError: text('metric_error'),
     createdAt: text('created_at').notNull().default(now),
@@ -190,6 +192,7 @@ export const metricSnapshots = sqliteTable(
     likes: integer('likes'),
     comments: integer('comments'),
     shares: integer('shares'),
+    saves: integer('saves'),
     /** JSON object up to 16 KB: watch time, CTR, impressions, traffic sources... */
     extra: text('extra', { mode: 'json' }).$type<Record<string, unknown>>(),
     createdAt: text('created_at').notNull().default(now),
@@ -309,6 +312,7 @@ export const soundSightings = sqliteTable(
     videoAuthor: text('video_author'),
     plays: integer('plays'),
     likes: integer('likes'),
+    saves: integer('saves'),
     postedAt: text('posted_at'),
     source: text('source', { enum: SOUND_SOURCES }).notNull(),
     /** Two letters, upper case. */
