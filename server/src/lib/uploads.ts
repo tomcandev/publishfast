@@ -1,9 +1,9 @@
-import { readdir, rm } from 'node:fs/promises'
+import { readdir, rm, stat, unlink } from 'node:fs/promises'
 import { randomUUID } from 'node:crypto'
 import { join } from 'node:path'
 import { and, eq, inArray, isNull, lt, ne, or, sql } from 'drizzle-orm'
 import { db } from '../db/index.js'
-import { contents, uploads } from '../db/schema.js'
+import { assets, contents, uploads } from '../db/schema.js'
 import { config } from './config.js'
 
 /** Unfinished uploads older than this are swept. */
@@ -104,6 +104,34 @@ export async function sweepUploads(now = new Date()) {
   const known = new Set(db.select({ id: uploads.id }).from(uploads).all().map((r) => r.id))
   for (const name of folders) {
     if (UUID.test(name) && !known.has(name)) await rm(partsFolder(name), { recursive: true, force: true }).catch(() => {})
+  }
+  await sweepOrphanUploadFiles(now)
+  return removed
+}
+
+/** A file in uploads/ younger than this may still be waiting for its row (a multipart upload in progress). */
+export const ORPHAN_MIN_AGE_MS = 3_600_000
+
+/**
+ * Deletes files in uploads/ that no asset row names and that are older than
+ * one hour (e.g. left by a process that died between moving a joined upload
+ * into place and committing its row). Never younger ones: a multipart
+ * upload's file exists on disk before its row.
+ */
+export async function sweepOrphanUploadFiles(now = new Date()) {
+  const names = await readdir(config.uploadsDir).catch(() => [] as string[])
+  if (names.length === 0) return 0
+  const known = new Set(db.select({ f: assets.filePath }).from(assets).all().map((r) => r.f))
+  let removed = 0
+  for (const name of names) {
+    if (known.has(name)) continue
+    const path = join(config.uploadsDir, name)
+    const info = await stat(path).catch(() => null)
+    if (!info?.isFile() || now.getTime() - info.mtimeMs < ORPHAN_MIN_AGE_MS) continue
+    // Re-check just before deleting: a row may have arrived meanwhile.
+    if (db.select({ id: assets.id }).from(assets).where(eq(assets.filePath, name)).get()) continue
+    await unlink(path).catch(() => {})
+    removed++
   }
   return removed
 }
