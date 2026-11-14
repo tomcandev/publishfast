@@ -9,12 +9,12 @@ import { z } from 'zod'
 import { db } from '../db/index.js'
 import { CONTENT_TYPES, assets, contents, publications, users, type Content } from '../db/schema.js'
 import { config } from '../lib/config.js'
-import { NO_SPACE, belowFreeSpaceFloor, byteLimit, httpError, ingestBytesHeld } from '../lib/disk.js'
+import { NO_SPACE, belowFreeSpaceFloor, byteLimit, bytesInFlight, httpError, ingestBytesHeld, reserveInFlight } from '../lib/disk.js'
 import { classifyUpload, isActiveContent } from '../lib/download.js'
 import { META_MAX_BYTES, isoTime, jsonObject } from '../lib/fields.js'
 import { requireIngest } from '../lib/guards.js'
 import { stripTokenIds } from '../lib/holds.js'
-import { discardUploads } from '../lib/uploads.js'
+import { discardUploads, unfinishedUploads } from '../lib/uploads.js'
 
 import { inferHookId } from '../lib/metrics.js'
 
@@ -71,6 +71,8 @@ function withAssets(rows: Content[]) {
       .filter((a) => a.contentId === row.id)
       // Never expose on-disk paths to the client.
       .map(({ filePath: _hidden, ...rest }) => rest),
+    // Unfinished uploads in parts, so a client can resume one it lost track of.
+    uploads: unfinishedUploads(row.id),
   }))
 }
 
@@ -279,91 +281,104 @@ export async function ingestRoutes(app: FastifyInstance) {
       return reply.code(400).send({ error: 'Content-Type must be multipart/form-data' })
     }
 
-    // Free-space floor for everyone; the per-token total only for ingest-scope tokens.
+    // Free-space floor for everyone (counting uploads in flight); the per-token
+    // total only for ingest-scope tokens, counting what is stored, reserved by
+    // open uploads in parts, and in flight in other requests of the same token.
     const declared = Number(req.headers['content-length']) || 0
     if (await belowFreeSpaceFloor(config.uploadsDir, declared)) return reply.code(507).send({ error: NO_SPACE })
-    let allowance = scoped ? config.maxIngestBytes - ingestBytesHeld(scoped.id) : Infinity
     const OVER_CAP = 'This token already holds its maximum of draft and ready media'
-    if (allowance <= 0) return reply.code(413).send({ error: OVER_CAP })
-
-    const nextOrder =
-      (db
-        .select({ n: sql<number>`coalesce(max(${assets.sortOrder}), -1)` })
-        .from(assets)
-        .where(eq(assets.contentId, id))
-        .get()?.n ?? -1) + 1
-
-    const created: string[] = []
-    const writtenPaths: string[] = []
-    let index = 0
-
+    let allowance = Infinity
+    let reserve = declared
+    if (scoped) {
+      const free = config.maxIngestBytes - ingestBytesHeld(scoped.id) - bytesInFlight(scoped.id)
+      // With a Content-Length the whole body is reserved; without one, everything that is left.
+      allowance = declared > 0 ? declared : free
+      reserve = allowance
+      if (free <= 0 || declared > free) return reply.code(413).send({ error: OVER_CAP })
+    }
+    const release = reserveInFlight(scoped?.id ?? null, reserve)
     try {
-      for await (const part of req.files()) {
-        // Scoped tokens may never store something a browser could run (svg, html, xml…).
-        // Old admin tokens still may; such files are only ever served as attachments.
-        if (req.apiToken?.scope && isActiveContent(part.mimetype || '', part.filename || '')) {
-          part.file.resume()
-          throw Object.assign(new Error('This file type is not accepted (svg, html and xml are refused)'), {
-            statusCode: 400,
-          })
-        }
-        const stored = storedName(part.filename || '')
-        const abs = join(config.uploadsDir, stored)
+      const nextOrder =
+        (db
+          .select({ n: sql<number>`coalesce(max(${assets.sortOrder}), -1)` })
+          .from(assets)
+          .where(eq(assets.contentId, id))
+          .get()?.n ?? -1) + 1
 
-        // Recorded before writing, so a failed, oversize or aborted part leaves nothing behind.
-        writtenPaths.push(abs)
-        const limit = byteLimit(allowance, 413, OVER_CAP)
-        await pipeline(part.file, limit, createWriteStream(abs))
-        if (part.file.truncated) throw httpError(413, 'File size exceeds allowed limit')
-        allowance -= limit.bytes()
+      const created: string[] = []
+      const writtenPaths: string[] = []
+      let index = 0
 
-        if (scoped) {
-          // The item may have been released while the file streamed in.
-          const now = db.select({ status: contents.status }).from(contents).where(eq(contents.id, id)).get()
-          if (now?.status !== 'DRAFT') {
-            throw Object.assign(new Error('This item is no longer a draft and cannot be changed'), {
-              statusCode: 409,
+      try {
+        for await (const part of req.files()) {
+          // Scoped tokens may never store something a browser could run (svg, html, xml…).
+          // Old admin tokens still may; such files are only ever served as attachments.
+          if (req.apiToken?.scope && isActiveContent(part.mimetype || '', part.filename || '')) {
+            part.file.resume()
+            throw Object.assign(new Error('This file type is not accepted (svg, html and xml are refused)'), {
+              statusCode: 400,
             })
           }
+          const stored = storedName(part.filename || '')
+          const abs = join(config.uploadsDir, stored)
+
+          // Recorded before writing, so a failed, oversize or aborted part leaves nothing behind.
+          writtenPaths.push(abs)
+          const limit = byteLimit(allowance, 413, OVER_CAP)
+          await pipeline(part.file, limit, createWriteStream(abs))
+          if (part.file.truncated) throw httpError(413, 'File size exceeds allowed limit')
+          allowance -= limit.bytes()
+
+          if (scoped) {
+            // The item may have been released while the file streamed in.
+            const now = db.select({ status: contents.status }).from(contents).where(eq(contents.id, id)).get()
+            if (now?.status !== 'DRAFT') {
+              throw Object.assign(new Error('This item is no longer a draft and cannot be changed'), {
+                statusCode: 409,
+              })
+            }
+          }
+
+          const { type, mime } = classifyUpload(part.mimetype || '', part.filename || '')
+          const assetId = randomUUID()
+          db.insert(assets)
+            .values({
+              id: assetId,
+              contentId: id,
+              filePath: stored,
+              originalName: part.filename || stored,
+              mime,
+              size: (await import('node:fs')).statSync(abs).size,
+              sortOrder: nextOrder + index,
+              type,
+            })
+            .run()
+          created.push(assetId)
+          index++
         }
-
-        const { type, mime } = classifyUpload(part.mimetype || '', part.filename || '')
-        const assetId = randomUUID()
-        db.insert(assets)
-          .values({
-            id: assetId,
-            contentId: id,
-            filePath: stored,
-            originalName: part.filename || stored,
-            mime,
-            size: (await import('node:fs')).statSync(abs).size,
-            sortOrder: nextOrder + index,
-            type,
-          })
-          .run()
-        created.push(assetId)
-        index++
+      } catch (err) {
+        // Don't leave orphaned files behind if the upload fails partway.
+        await Promise.all(writtenPaths.map((p) => unlink(p).catch(() => {})))
+        // ...nor rows pointing at the files just removed.
+        if (created.length > 0) db.delete(assets).where(inArray(assets.id, created)).run()
+        const status = (err as { statusCode?: number }).statusCode ?? 400
+        return reply.code(status).send({ error: (err as Error).message })
       }
-    } catch (err) {
-      // Don't leave orphaned files behind if the upload fails partway.
-      await Promise.all(writtenPaths.map((p) => unlink(p).catch(() => {})))
-      // ...nor rows pointing at the files just removed.
-      if (created.length > 0) db.delete(assets).where(inArray(assets.id, created)).run()
-      const status = (err as { statusCode?: number }).statusCode ?? 400
-      return reply.code(status).send({ error: (err as Error).message })
+
+      if (created.length === 0) return reply.code(400).send({ error: 'No files were uploaded' })
+
+      return reply.code(201).send({
+        assets: db
+          .select()
+          .from(assets)
+          .where(eq(assets.contentId, id))
+          .orderBy(asc(assets.sortOrder))
+          .all()
+          .map(({ filePath: _hidden, ...rest }) => rest),
+      })
+    } finally {
+      release()
     }
-
-    if (created.length === 0) return reply.code(400).send({ error: 'No files were uploaded' })
-
-    return reply.code(201).send({
-      assets: db
-        .select()
-        .from(assets)
-        .where(eq(assets.contentId, id))
-        .orderBy(asc(assets.sortOrder))
-        .all()
-        .map(({ filePath: _hidden, ...rest }) => rest),
-    })
   })
 
   /**
@@ -442,13 +457,18 @@ export async function ingestRoutes(app: FastifyInstance) {
     if (!content || (scoped && content.createdByToken !== scoped.id)) {
       return reply.code(404).send({ error: 'Not found' })
     }
-    const assetRows = db.select({ filePath: assets.filePath }).from(assets).where(eq(assets.contentId, id)).all()
     if (content.status === 'DRAFT' && !hasPublications(id)) await discardUploads(id)
-    // Only a DRAFT, checked inside the DELETE (asset rows go with it by cascade).
-    const result = db
-      .delete(contents)
-      .where(and(eq(contents.id, id), eq(contents.status, 'DRAFT'), hasNoPublications(contents.id)))
-      .run()
+    // Only a DRAFT, checked inside the DELETE (asset rows go with it by cascade). The file list is
+    // read in the same transaction, so an asset committed a moment earlier (an upload completing)
+    // is never left on disk without its row.
+    let assetRows: { filePath: string }[] = []
+    const result = db.transaction((tx) => {
+      assetRows = tx.select({ filePath: assets.filePath }).from(assets).where(eq(assets.contentId, id)).all()
+      return tx
+        .delete(contents)
+        .where(and(eq(contents.id, id), eq(contents.status, 'DRAFT'), hasNoPublications(contents.id)))
+        .run()
+    })
     if (result.changes === 0) {
       if (hasPublications(id)) return reply.code(409).send({ ...HAS_PUBLICATIONS, status: content.status })
       return reply.code(409).send({ error: 'Only a draft can be deleted', reason: 'not_draft', status: content.status })

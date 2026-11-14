@@ -26,6 +26,8 @@ const addedColumns: [table: string, column: string, ddl: string][] = [
   ['api_tokens', 'revoked_at', 'TEXT'],
   ['api_tokens', 'created_by', 'TEXT'],
   ['api_tokens', 'file_prefix', 'TEXT'],
+  ['uploads', 'completing_at', 'TEXT'],
+  ['upload_parts', 'file', 'TEXT'],
 ]
 
 const statements = [
@@ -172,14 +174,16 @@ const statements = [
     mime TEXT,
     sha256 TEXT,
     created_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ','now')),
-    asset_id TEXT
+    asset_id TEXT,
+    completing_at TEXT
   )`,
   `CREATE INDEX IF NOT EXISTS uploads_content_idx ON uploads (content_id)`,
   `CREATE INDEX IF NOT EXISTS uploads_created_idx ON uploads (created_at)`,
   `CREATE TABLE IF NOT EXISTS upload_parts (
     upload_id TEXT NOT NULL REFERENCES uploads(id) ON DELETE CASCADE,
     n INTEGER NOT NULL,
-    size INTEGER NOT NULL
+    size INTEGER NOT NULL,
+    file TEXT
   )`,
   `CREATE UNIQUE INDEX IF NOT EXISTS upload_parts_unique ON upload_parts (upload_id, n)`,
   `CREATE INDEX IF NOT EXISTS files_expires_idx ON files (expires_at)`,

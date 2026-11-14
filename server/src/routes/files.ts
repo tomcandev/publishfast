@@ -7,7 +7,7 @@ import { and, asc, eq, gt, sql } from 'drizzle-orm'
 import { db } from '../db/index.js'
 import { files, type StoredFile } from '../db/schema.js'
 import { config } from '../lib/config.js'
-import { NO_SPACE, belowFreeSpaceFloor, writeLimited } from '../lib/disk.js'
+import { NO_SPACE, belowFreeSpaceFloor, reserveInFlight, writeLimited } from '../lib/disk.js'
 import { sendFileHeaders } from '../lib/download.js'
 import { isValidFileKey, removeStoredFile, storedFilePath } from '../lib/files.js'
 import { requireFileToken } from '../lib/guards.js'
@@ -100,80 +100,86 @@ export async function fileRoutes(app: FastifyInstance) {
       return reply.code(507).header('Connection', 'close').send({ error: NO_SPACE })
     }
 
-    const storedPath = `${randomUUID()}.bin`
-    const abs = storedFilePath(storedPath)!
-    const hash = createHash('sha256')
-    let size = 0
-    const meter = new Transform({
-      transform(chunk: Buffer, _enc, cb) {
-        size += chunk.length
-        if (size > max) return cb(httpError(413, `File is larger than ${max} bytes`))
-        hash.update(chunk)
-        cb(null, chunk)
-      },
-    })
-
+    // Counted as in flight (for the free-space floor of concurrent uploads) until the end.
+    const release = reserveInFlight(null, Number.isFinite(declared) ? declared : max)
     try {
-      const body = (req.body as Readable | undefined) ?? Readable.from([])
-      await writeLimited(body, meter, abs)
-    } catch (err) {
-      await removeStoredFile(storedPath)
-      const status = (err as { statusCode?: number }).statusCode ?? 400
-      if (status === 413) reply.header('Connection', 'close')
-      return reply.code(status).send({ error: status === 413 ? (err as Error).message : 'Upload failed' })
-    }
+      const storedPath = `${randomUUID()}.bin`
+      const abs = storedFilePath(storedPath)!
+      const hash = createHash('sha256')
+      let size = 0
+      const meter = new Transform({
+        transform(chunk: Buffer, _enc, cb) {
+          size += chunk.length
+          if (size > max) return cb(httpError(413, `File is larger than ${max} bytes`))
+          hash.update(chunk)
+          cb(null, chunk)
+        },
+      })
 
-    const now = new Date()
-    const values = {
-      storedPath,
-      size,
-      sha256: hash.digest('hex'),
-      mime: cleanMime(req.headers['content-type']),
-      createdAt: now.toISOString(),
-      expiresAt: new Date(now.getTime() + days * 86_400_000).toISOString(),
-      createdByToken: req.apiToken?.id ?? null,
-    }
+      try {
+        const body = (req.body as Readable | undefined) ?? Readable.from([])
+        await writeLimited(body, meter, abs)
+      } catch (err) {
+        await removeStoredFile(storedPath)
+        const status = (err as { statusCode?: number }).statusCode ?? 400
+        if (status === 413) reply.header('Connection', 'close')
+        return reply.code(status).send({ error: status === 413 ? (err as Error).message : 'Upload failed' })
+      }
 
-    // Replace in one transaction; the old bytes are deleted after it commits.
-    // The total under the caller's prefix is capped (admin-power tokens exempt).
-    const prefix = prefixFor(req) ?? ''
-    let replaced: string | null = null
-    let overCap = false
-    db.transaction((tx) => {
-      if (prefix !== '') {
-        const used = tx
-          .select({ n: sql<number>`coalesce(sum(${files.size}), 0)` })
-          .from(files)
-          .where(
-            and(
-              sql`substr(${files.key}, 1, ${prefix.length}) = ${prefix}`,
-              sql`${files.key} <> ${key}`,
-              gt(files.expiresAt, now.toISOString()),
-            ),
-          )
-          .get()
-        if (Number(used?.n ?? 0) + size > config.maxFilesPrefixBytes) {
-          overCap = true
-          return
+      const now = new Date()
+      const values = {
+        storedPath,
+        size,
+        sha256: hash.digest('hex'),
+        mime: cleanMime(req.headers['content-type']),
+        createdAt: now.toISOString(),
+        expiresAt: new Date(now.getTime() + days * 86_400_000).toISOString(),
+        createdByToken: req.apiToken?.id ?? null,
+      }
+
+      // Replace in one transaction; the old bytes are deleted after it commits.
+      // The total under the caller's prefix is capped (admin-power tokens exempt).
+      const prefix = prefixFor(req) ?? ''
+      let replaced: string | null = null
+      let overCap = false
+      db.transaction((tx) => {
+        if (prefix !== '') {
+          const used = tx
+            .select({ n: sql<number>`coalesce(sum(${files.size}), 0)` })
+            .from(files)
+            .where(
+              and(
+                sql`substr(${files.key}, 1, ${prefix.length}) = ${prefix}`,
+                sql`${files.key} <> ${key}`,
+                gt(files.expiresAt, now.toISOString()),
+              ),
+            )
+            .get()
+          if (Number(used?.n ?? 0) + size > config.maxFilesPrefixBytes) {
+            overCap = true
+            return
+          }
         }
+        const old = tx.select().from(files).where(eq(files.key, key)).get()
+        if (old) {
+          tx.update(files).set(values).where(eq(files.id, old.id)).run()
+          replaced = old.storedPath
+        } else {
+          tx.insert(files).values({ id: randomUUID(), key, ...values }).run()
+        }
+      })
+      if (overCap) {
+        await removeStoredFile(storedPath)
+        return reply.code(413).send({ error: `The files under "${prefix}" would exceed ${config.maxFilesPrefixBytes} bytes` })
       }
-      const old = tx.select().from(files).where(eq(files.key, key)).get()
-      if (old) {
-        tx.update(files).set(values).where(eq(files.id, old.id)).run()
-        replaced = old.storedPath
-      } else {
-        tx.insert(files).values({ id: randomUUID(), key, ...values }).run()
-      }
-    })
-    if (overCap) {
-      await removeStoredFile(storedPath)
-      return reply.code(413).send({ error: `The files under "${prefix}" would exceed ${config.maxFilesPrefixBytes} bytes` })
-    }
-    if (replaced) await removeStoredFile(replaced)
+      if (replaced) await removeStoredFile(replaced)
 
-    return reply
-      .code(replaced ? 200 : 201)
-      .send({ key, size: values.size, sha256: values.sha256, expiresAt: values.expiresAt })
+      return reply
+        .code(replaced ? 200 : 201)
+        .send({ key, size: values.size, sha256: values.sha256, expiresAt: values.expiresAt })
+    } finally {
+      release()
+    }
   })
 
   app.get('/api/files/*', { exposeHeadRoute: false }, async (req, reply) => {

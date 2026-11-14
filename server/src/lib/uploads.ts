@@ -1,4 +1,5 @@
 import { readdir, rm } from 'node:fs/promises'
+import { randomUUID } from 'node:crypto'
 import { join } from 'node:path'
 import { and, eq, inArray, isNull, lt, ne, or, sql } from 'drizzle-orm'
 import { db } from '../db/index.js'
@@ -16,10 +17,30 @@ export function partsFolder(uploadId: string) {
   return join(config.partsDir, uploadId)
 }
 
-/** Path of part n (1-based), server-made: <partsDir>/<uuid>/<n>.part */
-export function partPath(uploadId: string, n: number) {
+const PART_FILE = /^[1-9][0-9]{0,6}\.[0-9a-f-]{36}\.part$/
+
+/** A new server-made file name for a copy of part n: <n>.<uuid>.part */
+export function newPartFile(n: number) {
   if (!Number.isSafeInteger(n) || n < 1) throw new Error('bad part number')
-  return join(partsFolder(uploadId), `${n}.part`)
+  return `${n}.${randomUUID()}.part`
+}
+
+/** Path of a stored part file, refusing anything that is not a server-made name. */
+export function partPath(uploadId: string, file: string) {
+  if (!PART_FILE.test(file)) throw new Error('bad part file')
+  return join(partsFolder(uploadId), file)
+}
+
+/** The largest part n may be: partSize, or what is left for the last part. */
+export function expectedPartMax(upload: { size: number; partSize: number; parts: number }, n: number) {
+  return n === upload.parts ? upload.size - (upload.parts - 1) * upload.partSize : upload.partSize
+}
+
+/** A completing mark older than this counts as a crashed join. */
+export const COMPLETING_STALE_MS = 10 * 60_000
+
+export function staleCompletingBefore(now = Date.now()) {
+  return new Date(now - COMPLETING_STALE_MS).toISOString()
 }
 
 async function removeUploads(ids: string[]) {
@@ -29,12 +50,23 @@ async function removeUploads(ids: string[]) {
   return ids.length
 }
 
-/** Drops the unfinished uploads of an item (it left DRAFT or is being deleted). */
+/**
+ * Drops the unfinished uploads of an item (it left DRAFT or is being deleted).
+ * An upload being completed right now is left alone: its join is reading the
+ * parts; it will find the item no longer a draft, answer 409 and remove its
+ * file, and the sweep removes what is left.
+ */
 export async function discardUploads(contentId: string) {
   const ids = db
     .select({ id: uploads.id })
     .from(uploads)
-    .where(and(eq(uploads.contentId, contentId), isNull(uploads.assetId)))
+    .where(
+      and(
+        eq(uploads.contentId, contentId),
+        isNull(uploads.assetId),
+        or(isNull(uploads.completingAt), lt(uploads.completingAt, staleCompletingBefore())),
+      ),
+    )
     .all()
     .map((r) => r.id)
   return removeUploads(ids)
@@ -76,9 +108,26 @@ export async function sweepUploads(now = new Date()) {
   return removed
 }
 
-/** Sum of the part sizes received so far, and which parts. */
+/** The parts received so far: number, size and stored file. */
 export function receivedParts(uploadId: string) {
-  return db.all<{ n: number; size: number }>(
-    sql`SELECT n, size FROM upload_parts WHERE upload_id = ${uploadId} ORDER BY n`,
+  return db.all<{ n: number; size: number; file: string | null }>(
+    sql`SELECT n, size, file FROM upload_parts WHERE upload_id = ${uploadId} ORDER BY n`,
   )
+}
+
+/** Unfinished uploads of an item, as a resuming client needs them. */
+export function unfinishedUploads(contentId: string) {
+  return db
+    .select()
+    .from(uploads)
+    .where(and(eq(uploads.contentId, contentId), isNull(uploads.assetId)))
+    .orderBy(uploads.createdAt)
+    .all()
+    .map((u) => ({
+      uploadId: u.id,
+      name: u.name,
+      size: u.size,
+      partSize: u.partSize,
+      received: receivedParts(u.id).map((p) => p.n),
+    }))
 }

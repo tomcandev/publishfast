@@ -232,6 +232,12 @@ export const uploads = sqliteTable(
     createdAt: text('created_at').notNull().default(now),
     /** Set once: the asset the upload became. Completing again answers it. */
     assetId: text('asset_id'),
+    /**
+     * Set (compare-and-swap) while one request joins the parts. While it is
+     * fresh, parts and abort answer 409; older than 10 minutes it counts as a
+     * crashed join and may be taken over.
+     */
+    completingAt: text('completing_at'),
   },
   (t) => [index('uploads_content_idx').on(t.contentId), index('uploads_created_idx').on(t.createdAt)],
 )
@@ -244,6 +250,8 @@ export const uploadParts = sqliteTable(
       .references(() => uploads.id, { onDelete: 'cascade' }),
     n: integer('n').notNull(),
     size: integer('size').notNull(),
+    /** Server-made file name of this copy of the part (a resend writes a new one). */
+    file: text('file'),
   },
   (t) => [uniqueIndex('upload_parts_unique').on(t.uploadId, t.n)],
 )

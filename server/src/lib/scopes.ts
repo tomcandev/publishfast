@@ -29,6 +29,7 @@ export const TOKEN_ROUTES: Record<string, { scopes: readonly NarrowScope[]; acti
   'POST /api/ingest/contents/:id/withdraw': { scopes: ['ingest'], action: 'ingest.withdraw' },
   // uploads in parts (routes/uploads.ts)
   'POST /api/ingest/contents/:id/uploads': { scopes: ['ingest'], action: 'ingest.upload.init' },
+  'GET /api/ingest/contents/:id/uploads': { scopes: ['ingest'] },
   'PUT /api/ingest/contents/:id/uploads/:uploadId/parts/:n': { scopes: ['ingest'], action: 'ingest.upload.part' },
   'GET /api/ingest/contents/:id/uploads/:uploadId': { scopes: ['ingest'] },
   'POST /api/ingest/contents/:id/uploads/:uploadId/complete': { scopes: ['ingest'], action: 'ingest.upload.complete' },

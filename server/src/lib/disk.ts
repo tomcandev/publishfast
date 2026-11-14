@@ -15,13 +15,45 @@ export function httpError(statusCode: number, message: string) {
 export const NO_SPACE = 'Not enough free disk space on the server'
 
 /**
- * True when writing `incoming` more bytes under `dir` would leave less than
- * MIN_FREE_BYTES free. Checked before any upload is accepted (all callers).
+ * Bytes of uploads in progress in this process, per ingest token and in
+ * total. A request reserves what it may write when it starts and releases
+ * it in a finally, so the per-token cap and the free-space floor see
+ * concurrent uploads, not only what is already stored.
+ */
+const inFlightByToken = new Map<string, number>()
+let inFlightTotal = 0
+
+export function bytesInFlight(tokenId?: string) {
+  return tokenId === undefined ? inFlightTotal : (inFlightByToken.get(tokenId) ?? 0)
+}
+
+/** Reserve `bytes` (under `tokenId` when given). Returns the release function; calling it twice is harmless. */
+export function reserveInFlight(tokenId: string | null, bytes: number) {
+  const n = Math.max(0, Math.floor(bytes))
+  inFlightTotal += n
+  if (tokenId) inFlightByToken.set(tokenId, bytesInFlight(tokenId) + n)
+  let released = false
+  return () => {
+    if (released) return
+    released = true
+    inFlightTotal -= n
+    if (tokenId) {
+      const left = bytesInFlight(tokenId) - n
+      if (left > 0) inFlightByToken.set(tokenId, left)
+      else inFlightByToken.delete(tokenId)
+    }
+  }
+}
+
+/**
+ * True when writing `incoming` more bytes under `dir` (on top of every upload
+ * in flight) would leave less than MIN_FREE_BYTES free. Checked before any
+ * upload is accepted (all callers), before the caller reserves its bytes.
  */
 export async function belowFreeSpaceFloor(dir: string, incoming = 0) {
   if (!(config.minFreeBytes > 0)) return false
   const s = await statfs(dir)
-  return Number(s.bavail) * Number(s.bsize) - incoming < config.minFreeBytes
+  return Number(s.bavail) * Number(s.bsize) - incoming - inFlightTotal < config.minFreeBytes
 }
 
 /**
