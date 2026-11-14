@@ -3,6 +3,8 @@
  *
  *   node server/dist/scripts/prune.js --days 3 --dry-run   # what would go; reads only
  *   node server/dist/scripts/prune.js --days 3 --yes       # does it once
+ *   … --trust-clock   skips the one check that refuses when the newest row is older than --days
+ *                     (a clock that jumped forward, or a server where nothing was created lately)
  *   (development: npm run -s prune -w server -- --days 3 --dry-run)
  *
  * The dry run opens the database read-only, never migrates it, and uses the
@@ -20,7 +22,7 @@ import { dryRunReport, missingPruneColumns, type PruneReport } from '../lib/prun
 
 class CliError extends Error {}
 
-const USAGE = 'Usage: prune --days <whole days> (--dry-run | --yes)'
+const USAGE = 'Usage: prune --days <whole days> (--dry-run | --yes) [--trust-clock]'
 
 function mb(bytes: number) {
   return `${(bytes / 1024 ** 2).toFixed(1)} MB`
@@ -65,8 +67,10 @@ export async function main(argv: string[]) {
       days: { type: 'string' },
       'dry-run': { type: 'boolean' },
       yes: { type: 'boolean' },
+      'trust-clock': { type: 'boolean' },
     },
   })
+  const trustClock = !!values['trust-clock']
   const days = parsePruneDays(values.days)
   if (!days) throw new CliError(`--days must be a whole number of days from 1 to 3650\n${USAGE}`)
   if (!!values['dry-run'] === !!values.yes) throw new CliError(`Give exactly one of --dry-run and --yes\n${USAGE}`)
@@ -83,7 +87,9 @@ export async function main(argv: string[]) {
         )
       }
       process.stdout.write('Opened the database read-only.\n')
-      process.stdout.write(formatReport(dryRunReport(conn, config.uploadsDir, days)) + '\n')
+      const report = dryRunReport(conn, config.uploadsDir, days, new Date(), { trustClock })
+      process.stdout.write(formatReport(report) + '\n')
+      if (report.refused) throw new CliError('Refused: nothing was selected.')
     } finally {
       conn.close()
     }
@@ -94,7 +100,7 @@ export async function main(argv: string[]) {
   const { migrate } = await import('../db/migrate.js')
   const { pruneMedia } = await import('../lib/prune.js')
   migrate()
-  const report = await pruneMedia({ days })
+  const report = await pruneMedia({ days, trustClock })
   process.stdout.write(formatReport(report) + '\n')
   if (report.refused) throw new CliError('Refused: nothing was deleted.')
 }

@@ -205,6 +205,23 @@ before the first run:
    `Media prune: refused to run, nothing deleted: …` instead.
    `PRUNE_PUBLISHED_AFTER_DAYS` is a number of days, not an on/off flag like `SWEEP_ORPHAN_UPLOADS`:
    `1` means files go one day after publishing.
+
+**When the prune refuses because of the clock.** It refuses (deletes nothing, logs one line, at most once a
+day) when the server clock looks wrong. One of these checks is about a clock that jumped forward: it
+refuses when the newest row the server wrote (`created_at` of contents, files or publications) is more
+than that many days old. On a server where nothing was created for that long (a quiet week), it refuses for
+the same reason, and keeps refusing until something new is created. The log says so:
+`Media prune: refused to run, nothing deleted: the newest row this server wrote (…) is more than 3 day(s)
+before this server's clock (…): either the clock jumped forward, or nothing was created for 3 day(s). …`.
+Check the clock (`date -u`); if it is right, run the prune once by hand with `--trust-clock`, which skips
+only this check (the scheduled run never skips it):
+
+```bash
+node server/dist/scripts/prune.js --days 3 --dry-run --trust-clock   # read it first
+node server/dist/scripts/prune.js --days 3 --yes --trust-clock
+```
+
+The dry run and `--yes` exit 1 whenever they refuse.
 4. Admin → Storage shows what is stored by item status, what was removed so far and the free disk.
 
 To turn it off again, remove the line (or set `0`) and restart. Files already removed stay removed (restore

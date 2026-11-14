@@ -109,13 +109,15 @@ export async function pruneMedia(opts: {
   days: number
   now?: Date
   dryRun?: boolean
+  /** The script's --trust-clock: skip the "clock jumped forward / quiet server" check (never the scheduled run). */
+  trustClock?: boolean
   /** Tests only: runs between the selection and the marking, to play a concurrent change. */
   _afterSelect?: () => void
   /** Tests only: runs between the marking and the deleting. */
   _afterMark?: () => void | Promise<void>
 }): Promise<PruneReport> {
   const now = opts.now ?? new Date()
-  const problem = clockProblem(sqlite, now)
+  const problem = clockProblem(sqlite, now, { days: opts.days, trustClock: opts.trustClock })
   if (problem) return refusedReport(opts.days, now, problem, !!opts.dryRun)
 
   const sel = selectOn(sqlite, opts.days, now)
@@ -193,7 +195,8 @@ let running = false
 /**
  * Called every scheduler tick. Runs pruneMedia with PRUNE_PUBLISHED_AFTER_DAYS
  * when it is set and a run is due (one hour after start, then every 24 hours);
- * otherwise returns null.
+ * otherwise returns null. A refused run counts as the day's run, so its log
+ * line appears at most once a day. Never trusts the clock blindly.
  */
 export async function pruneIfDue(now = Date.now(), days = config.prunePublishedAfterDays) {
   if (!days || running) return null

@@ -175,12 +175,18 @@ export const CLOCK_AHEAD_MS = DAY_MS
 export const CLOCK_BEHIND_MS = 5 * 60_000
 
 /**
- * A reason not to prune at all, or null: the server clock looks wrong. The
- * newest publication the server recorded (created_at; published_at may be a
- * scheduled future slot) is more than 24 hours ahead of the clock, or the
- * clock is before the newest asset's created_at (a reset clock).
+ * A reason not to prune at all, or null: the server clock looks wrong.
+ * - Behind: the newest publication the server recorded (created_at;
+ *   published_at may be a scheduled future slot) is more than 24 hours ahead
+ *   of the clock, or the clock is before the newest asset's created_at.
+ * - Ahead: the newest row the server wrote (created_at of contents, assets,
+ *   publications) is more than `days` days before the clock. A clock that
+ *   jumped forward would otherwise make every file look old. A server where
+ *   nothing was created for that long is refused too, visibly, until the
+ *   owner runs the script once with --trust-clock (`trustClock`, which skips
+ *   only this check; the scheduled run never sets it).
  */
-export function clockProblem(conn: Database.Database, now = new Date()) {
+export function clockProblem(conn: Database.Database, now = new Date(), opts: { days?: number; trustClock?: boolean } = {}) {
   const pub = conn.prepare('SELECT max(created_at) AS t FROM publications').get() as { t: string | null }
   const asset = conn.prepare('SELECT max(created_at) AS t FROM assets').get() as { t: string | null }
   const pubT = strictTime(pub.t)
@@ -190,6 +196,22 @@ export function clockProblem(conn: Database.Database, now = new Date()) {
   }
   if (assetT !== null && now.getTime() < assetT - CLOCK_BEHIND_MS) {
     return `this server's clock (${now.toISOString()}) is before the newest file's upload time (${asset.t})`
+  }
+  if (opts.days && !opts.trustClock) {
+    let newest: { t: number; text: string } | null = null
+    for (const table of ['contents', 'assets', 'publications']) {
+      const row = conn.prepare(`SELECT max(created_at) AS t FROM ${table}`).get() as { t: string | null }
+      const t = strictTime(row.t)
+      if (t !== null && (!newest || t > newest.t)) newest = { t, text: row.t! }
+    }
+    if (newest && now.getTime() - newest.t > opts.days * DAY_MS) {
+      return (
+        `the newest row this server wrote (${newest.text}) is more than ${opts.days} day(s) before this server's clock ` +
+        `(${now.toISOString()}): either the clock jumped forward, or nothing was created for ${opts.days} day(s). ` +
+        `Check the clock; if it is right, run once by hand: node server/dist/scripts/prune.js --days ${opts.days} --dry-run --trust-clock, ` +
+        `then --yes --trust-clock`
+      )
+    }
   }
   return null
 }
@@ -306,8 +328,14 @@ export function refusedReport(days: number, now: Date, reason: string, dryRun: b
 }
 
 /** The dry run, on any connection (read-only in the script). Writes and deletes nothing. */
-export function dryRunReport(conn: Database.Database, uploadsDir: string, days: number, now = new Date()): PruneReport {
-  const problem = clockProblem(conn, now)
+export function dryRunReport(
+  conn: Database.Database,
+  uploadsDir: string,
+  days: number,
+  now = new Date(),
+  opts: { trustClock?: boolean } = {},
+): PruneReport {
+  const problem = clockProblem(conn, now, { days, trustClock: opts.trustClock })
   if (problem) return refusedReport(days, now, problem, true)
   const left = listLeftovers(conn, uploadsDir)
   return reportOf(selectPrunable(conn, days, now), true, { files: left.length, bytes: left.reduce((n, l) => n + l.bytes, 0) })

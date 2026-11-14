@@ -468,8 +468,10 @@ cannot make media go early; only strict ISO times with a zone are read (`2026-11
 Never touched: `DRAFT`, `READY`, `CLAIMED`, `FAILED` items; items with no publication or an unreadable
 time; a file attached less than that many days ago (its own `created_at`); a file another asset row also
 names; the drop box; unfinished uploads. Nothing at all when the server clock looks wrong: a publication
-recorded (`created_at`) more than 24 hours ahead of the clock, or a clock before the newest file's upload
-time; the run logs one line and deletes nothing. A file is deleted only after its row is marked and only
+recorded (`created_at`) more than 24 hours ahead of the clock, a clock before the newest file's upload
+time, or a newest server-written row (`created_at` of contents, assets, publications) more than that many
+days before the clock (a clock that jumped forward; also a quiet server, until the script is run once with
+`--trust-clock`). The run logs one line, at most once a day, and deletes nothing. A file is deleted only after its row is marked and only
 while no unpruned row names it.
 
 Once an item's media is gone (pruned rows and no live file), it cannot go back to a claimable state:

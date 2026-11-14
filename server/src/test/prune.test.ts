@@ -314,6 +314,22 @@ describe('a pruned item cannot go back to the queue (finding 2)', () => {
     assert.ok(!existsSync(join(config.uploadsDir, p.stored[0]!)))
   })
 
+  it('a scoped ingest token cannot set its own pruned draft to READY (409 media_pruned)', async () => {
+    const maker = createApiToken('reopen-maker', 'kol', { scope: 'ingest' })
+    const made = await call(app, 'POST', '/api/ingest/contents', { token: maker }, { code: 'PRUNED-DRAFT-1' })
+    assert.equal(made.statusCode, 201)
+    const id = made.json().content.id
+    db.insert(assets)
+      .values({ id: randomUUID(), contentId: id, filePath: `${randomUUID()}.mp4`, originalName: 'gone.mp4', mime: 'video/mp4', size: 1, type: 'video', createdAt: OLD, prunedAt: daysAgo(1) })
+      .run()
+    const res = await call(app, 'PATCH', `/api/ingest/contents/${id}`, { token: maker }, { status: 'READY' })
+    assert.equal(res.statusCode, 409)
+    assert.equal(res.json().reason, 'media_pruned')
+    assert.equal(db.select().from(contents).where(eq(contents.id, id)).get()!.status, 'DRAFT')
+    // Other edits to its own draft still work.
+    assert.equal((await call(app, 'PATCH', `/api/ingest/contents/${id}`, { token: maker }, { title: 'still a draft' })).statusCode, 200)
+  })
+
   it('second line of defence: a pruned item forced to READY is never listed or handed out', async () => {
     const p = item('PUBLISHED', [{}])
     await pruneMedia({ days: 3, now: NOW })
@@ -390,6 +406,23 @@ describe('freshly attached files and the clock (findings 4 and 6)', () => {
   })
 })
 
+describe('a clock that jumped forward, or a quiet server (review 3)', () => {
+  it('+4 days with fresh rows: refused, nothing deleted; the dry run says it too', async () => {
+    const realAgo = (d: number) => new Date(Date.now() - d * 86_400_000).toISOString()
+    const p = item('PUBLISHED', [{ publishedAt: realAgo(1), createdAt: realAgo(1) }], 1, 1000, { assetCreatedAt: realAgo(1) })
+    const jumped = new Date(Date.now() + 4 * 86_400_000)
+    const report = await pruneMedia({ days: 3, now: jumped })
+    assert.match(report.refused!, /more than 3 day\(s\) before this server's clock/)
+    assert.match(report.refused!, /--trust-clock/)
+    assert.equal(report.marked, undefined)
+    assert.ok(existsSync(join(config.uploadsDir, p.stored[0]!)))
+    assert.match((await pruneMedia({ days: 3, now: jumped, dryRun: true })).refused!, /before this server's clock/)
+    // Within the limit it runs (and would take that file once it is old enough by its own times).
+    assert.equal((await pruneMedia({ days: 3, now: new Date(Date.now() + 2 * 86_400_000), dryRun: true })).refused, undefined)
+  })
+
+})
+
 describe('change between selection and marking, crashes', () => {
   it('an item re-opened, or given a new publication, after selection keeps its files', async () => {
     const reopened = item('PUBLISHED', [{}])
@@ -455,6 +488,14 @@ describe('scheduled runs', () => {
     assert.equal(await pruneIfDue(start + PRUNE_FIRST_DELAY_MS + 2000, 3), null, 'not twice a day')
     assert.ok(await pruneIfDue(start + PRUNE_FIRST_DELAY_MS + PRUNE_INTERVAL_MS + 1000, 3))
   })
+
+  it('the scheduled run refuses on a quiet database (newest row 10 days old) and logs it at most once a day', async () => {
+    const tenDaysOn = Date.now() + 10 * 86_400_000
+    const first = await pruneIfDue(tenDaysOn, 3)
+    assert.ok(first?.refused, 'refused')
+    assert.match(first!.refused!, /nothing was created/)
+    assert.equal(await pruneIfDue(tenDaysOn + 3_600_000, 3), null, 'not again within the day')
+  })
 })
 
 describe('GET /api/admin/storage', () => {
@@ -519,6 +560,34 @@ describe('the prune script', () => {
     assert.match(yes.stdout, /Deleted \d+ file\(s\): [\d.]+ MB freed on disk/)
     assert.ok(!existsSync(path))
     assert.ok(db.select().from(assets).where(eq(assets.contentId, big.contentId)).get()!.prunedAt)
+  })
+
+  it('a quiet database (newest row 10 days old): refused without --trust-clock (exit 1, the line says why), runs with it', async () => {
+    const dir = mkdtempSync(join(tmpdir(), 'pf-prune-quiet-'))
+    const setup = await prune(['--days', '3', '--yes'], { DATA_DIR: dir }) // creates and migrates an empty database
+    assert.equal(setup.code, 0, setup.stderr)
+    const q = new Database(join(dir, 'publishfast.db'))
+    const ago = (d: number) => new Date(Date.now() - d * 86_400_000).toISOString()
+    q.prepare("INSERT INTO users (id, username, password_hash, display_name) VALUES ('u1', 'quiet', 'x', 'q')").run()
+    q.prepare("INSERT INTO contents (id, code, status, created_at) VALUES ('c1', 'QUIET-1', 'PUBLISHED', ?)").run(ago(12))
+    q.prepare("INSERT INTO assets (id, content_id, file_path, original_name, mime, size, type, created_at) VALUES ('a1', 'c1', 'q.mp4', 'q.mp4', 'video/mp4', 10, 'video', ?)").run(ago(12))
+    q.prepare("INSERT INTO publications (id, content_id, user_id, platform, published_url, published_at, created_at) VALUES ('p1', 'c1', 'u1', 'tiktok', 'https://example.test/q', ?, ?)").run(ago(10), ago(10))
+    q.close()
+    writeFileSync(join(dir, 'uploads', 'q.mp4'), 'quiet file')
+
+    for (const mode of ['--dry-run', '--yes']) {
+      const refused = await prune(['--days', '3', mode], { DATA_DIR: dir })
+      assert.equal(refused.code, 1, mode)
+      assert.match(refused.stdout, /refused to run, nothing (selected|deleted): the newest row this server wrote .* more than 3 day\(s\) before this server's clock/)
+      assert.match(refused.stdout, /--trust-clock/)
+      assert.ok(existsSync(join(dir, 'uploads', 'q.mp4')))
+    }
+    const dry = await prune(['--days', '3', '--dry-run', '--trust-clock'], { DATA_DIR: dir })
+    assert.equal(dry.code, 0, dry.stderr)
+    assert.match(dry.stdout, /Would delete 1 file\(s\)/)
+    const yes = await prune(['--days', '3', '--yes', '--trust-clock'], { DATA_DIR: dir })
+    assert.equal(yes.code, 0, yes.stderr)
+    assert.ok(!existsSync(join(dir, 'uploads', 'q.mp4')))
   })
 
   it('--dry-run never migrates: on an old schema it says so and leaves the database as it was', async () => {

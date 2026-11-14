@@ -270,14 +270,19 @@ export async function ingestRoutes(app: FastifyInstance) {
         .set(patch)
         .where(
           scoped
-            ? and(eq(contents.id, id), eq(contents.status, 'DRAFT'), eq(contents.createdByToken, scoped.id))
+            ? and(
+                eq(contents.id, id),
+                eq(contents.status, 'DRAFT'),
+                eq(contents.createdByToken, scoped.id),
+                reopens ? sql`NOT ${prunedOnly}` : undefined,
+              )
             : reopens
               ? and(eq(contents.id, id), sql`NOT ${prunedOnly}`)
               : eq(contents.id, id),
         )
         .run()
       if (result.changes === 0) {
-        if (!scoped && reopens && isPrunedOnly(id)) return reply.code(409).send(MEDIA_PRUNED)
+        if (reopens && isPrunedOnly(id)) return reply.code(409).send(MEDIA_PRUNED)
         return reply.code(409).send({ error: 'This item is no longer a draft and cannot be changed', reason: 'not_draft' })
       }
     } catch (err) {
