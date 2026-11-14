@@ -128,6 +128,9 @@ deploy.
 3. `sqlite3 data/publishfast.db "select mime, count(*) from assets group by 1"` — any type outside
    png, jpeg, webp, gif, mp4, quicktime and webm will now download instead of opening inline.
 4. After the restart, open one image post and one video post on an iPhone.
+5. The scheduler now deletes files in `data/uploads/` that no asset row names once they are older than
+   an hour (left by failed uploads). The backup keeps them; to see which they are first:
+   `comm -23 <(ls data/uploads | sort) <(sqlite3 data/publishfast.db "select file_path from assets" | sort)`.
 
 The schema change is additive (new nullable or defaulted columns, new tables
 `metric_snapshots`, `token_events`, `files`); existing tokens and sessions keep
@@ -148,8 +151,9 @@ curl -s http://127.0.0.1:8055/api/health   # {"ok":true}
 The server process now also runs the **release scheduler**: every 60 seconds it
 moves `DRAFT` items whose `release_at` has passed to `READY` (one
 compare-and-swap UPDATE, logged as "Release scheduler: released N draft(s)")
-and deletes expired drop-box files and uploads in parts left unfinished for 24
-hours (`DATA_DIR/upload-parts/`). It never touches drafts without
+and deletes expired drop-box files, uploads in parts left unfinished for 24
+hours (`DATA_DIR/upload-parts/`), and files in `DATA_DIR/uploads/` that no asset
+row names and that are older than one hour. It never touches drafts without
 `release_at`.
 
 ## Tokens

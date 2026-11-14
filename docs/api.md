@@ -118,8 +118,9 @@ Items this KOL has completed.
 
 Platforms: `tiktok`, `instagram`, `youtube_shorts`, `youtube` (long videos), `facebook`, `other`.
 `publishedUrl`: a token must send an `http://` or `https://` link. A signed-in person may also save
-other links (e.g. an app link `snssdk1233://…`), as before, except `javascript:`, `data:`, `vbscript:`
-and `file:`.
+other absolute links (e.g. an app link `snssdk1233://…`), as before, except those whose scheme — as the
+URL parser reads it, so hidden tabs, newlines or control characters do not count — is `javascript:`,
+`data:`, `vbscript:` or `file:`.
 Optional `publishedAt` (ISO 8601; an offset is converted to UTC) — e.g. a scheduled video's public time.
 
 Submitting the same `(contentId, platform)` again updates the existing row.
@@ -218,8 +219,12 @@ Ingest-scope tokens on their own `DRAFT` item, and admin tokens (old ones includ
 | `PUT …/uploads/:uploadId/parts/:n` | raw body (`Content-Type: application/octet-stream`), `n` from 1 to `parts` (`400` beyond). Part `n` is at most its expected length: `partSize`, and `size - (parts-1) × partSize` for the last (`413`, checked on `Content-Length` and on the bytes received) → `{part, size}`. Sending a part again replaces it; any order. `409` while the upload is being completed |
 | `GET …/uploads/:uploadId` | `{uploadId, name, size, partSize, parts, received: [n…], completed}` — to resume |
 | `GET /api/ingest/contents/:id/uploads` | the item's unfinished uploads `{uploads: [{uploadId, name, size, partSize, received}]}`, for a client that lost the id. The same list is in `GET /api/ingest/contents/:id` and `?code=` answers as `uploads` |
-| `POST …/uploads/:uploadId/complete` | marks the upload as completing (one request at a time; a second gets `409 reason: completing`; a mark older than 10 minutes counts as a crashed join). Every part there and sizes add up, else `409 {missing, receivedBytes}`; the bytes joined must equal `size`; joins them in order while hashing; a declared `sha256` that does not match → `422` and nothing is kept; creates the asset exactly as the multipart route (type and mime rules, sort order) → `201 {asset}`. Completing again answers the same asset |
+| `POST …/uploads/:uploadId/complete` | marks the upload as completing (one request at a time: a second `complete` during the join answers `409 reason: completing` — **retry it after a short wait**, it then answers the finished asset; a mark older than 10 minutes counts as a crashed join). Every part there and sizes add up, else `409 {missing, receivedBytes}`; the bytes joined must equal `size`; joins them in order while hashing; a declared `sha256` that does not match → `422` and nothing is kept; creates the asset exactly as the multipart route (type and mime rules, sort order) → `201 {asset}`. Completing again answers the same asset |
 | `DELETE …/uploads/:uploadId` | abort: deletes the parts. `409` while it is being completed |
+
+A scoped token may run at most 4 upload requests at once across the three upload routes (multipart
+assets, parts, drop-box `PUT`): beyond that `429 reason: too_many_uploads`. Old and admin tokens are not
+limited. A request that is closed before its body ends releases everything at once and leaves no file.
 
 Parts live under server-made names (`DATA_DIR/upload-parts/<uploadId>/<n>.part`); nothing the client
 sends becomes a path. Unfinished uploads count toward the token's total, are deleted when the item
