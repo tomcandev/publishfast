@@ -321,7 +321,8 @@ node server/dist/scripts/token.js <command> …
 - `list` shows name, scope, user, assignees, file prefix, created, last used, expires, revoked — never a
   token or a hash. `--events <name>` shows that token's last 50 state-changing calls.
 - `rotate` revokes the active token of that name and makes a new one with the same settings (an expiry
-  keeps its length, counted from now).
+  keeps its length, counted from now). In the same transaction the items it created, the claims it holds
+  and its drop-box files move to the new token, so a draft or an in-flight claim continues.
 
 ## Health
 

@@ -115,10 +115,16 @@ export type TokenSettings = {
  * the web admin page and the seed script still do.
  */
 export function createApiToken(name: string, role: 'admin' | 'kol' = 'admin', settings: TokenSettings = {}) {
+  return issueApiToken(name, role, settings).token
+}
+
+/** As createApiToken, but also returns the new row's id (the CLI's rotate needs it). */
+export function issueApiToken(name: string, role: 'admin' | 'kol' = 'admin', settings: TokenSettings = {}) {
   const plaintext = `pf_${randomBytes(24).toString('hex')}`
+  const id = randomUUID()
   db.insert(apiTokens)
     .values({
-      id: randomUUID(),
+      id,
       name,
       tokenHash: hashToken(plaintext),
       role,
@@ -131,7 +137,7 @@ export function createApiToken(name: string, role: 'admin' | 'kol' = 'admin', se
     })
     .run()
   // Returned once and never recoverable — only the hash is stored.
-  return plaintext
+  return { id, token: plaintext }
 }
 
 /**

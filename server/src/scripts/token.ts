@@ -19,8 +19,8 @@ import { parseArgs } from 'node:util'
 import { and, desc, eq, gt, inArray, isNull, or, sql } from 'drizzle-orm'
 import { db } from '../db/index.js'
 import { migrate } from '../db/migrate.js'
-import { TOKEN_SCOPES, apiTokens, contents, tokenEvents, users, type ApiToken, type TokenScope } from '../db/schema.js'
-import { createApiToken, type TokenSettings } from '../lib/auth.js'
+import { TOKEN_SCOPES, apiTokens, contents, files, tokenEvents, users, type TokenScope } from '../db/schema.js'
+import { createApiToken, issueApiToken, type TokenSettings } from '../lib/auth.js'
 import { isValidFilePrefix } from '../lib/files.js'
 
 class CliError extends Error {}
@@ -148,7 +148,13 @@ export function revokeToken(name: string | undefined) {
   return active.length
 }
 
-/** Revokes the active token and creates a new one with the same settings (expiry: same length, from now). */
+/**
+ * Revokes the active token and creates a new one with the same settings
+ * (expiry: same length, from now). In the same transaction the token's work
+ * moves to the new id: the items it created, the claims it holds and its
+ * drop-box files, so a draft or an in-flight claim continues with the new
+ * token. token_events and metric_snapshots keep the old id (history).
+ */
 export function rotateToken(name: string | undefined) {
   if (!name) throw new CliError('--name is required')
   const [old] = activeByName(name)
@@ -168,8 +174,14 @@ export function rotateToken(name: string | undefined) {
   }
   let token = ''
   db.transaction(() => {
+    // Every active token of that name is revoked, so all of their work moves.
+    const oldIds = activeByName(name).map((t) => t.id)
     revokeToken(name)
-    token = createApiToken(name, old.role, settings)
+    const fresh = issueApiToken(name, old.role, settings)
+    token = fresh.token
+    db.update(contents).set({ createdByToken: fresh.id }).where(inArray(contents.createdByToken, oldIds)).run()
+    db.update(contents).set({ claimedByToken: fresh.id }).where(inArray(contents.claimedByToken, oldIds)).run()
+    db.update(files).set({ createdByToken: fresh.id }).where(inArray(files.createdByToken, oldIds)).run()
   })
   err(`Rotated token ${describe(name, { ...settings, role: old.role })}; the old one is revoked.`)
   return token

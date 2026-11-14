@@ -11,7 +11,7 @@ import { eq } from 'drizzle-orm'
 import { buildApp } from '../app.js'
 import { db, sqlite } from '../db/index.js'
 import { migrate } from '../db/migrate.js'
-import { assets, contents, metricSnapshots, publications } from '../db/schema.js'
+import { apiTokens, assets, contents, files, metricSnapshots, publications } from '../db/schema.js'
 import { createApiToken } from '../lib/auth.js'
 import { config } from '../lib/config.js'
 import { _resetBearerFailures } from '../lib/rateLimit.js'
@@ -370,5 +370,46 @@ describe('finding 5: disk', () => {
     } finally {
       config.minFreeBytes = saved
     }
+  })
+})
+
+describe('finding 7: token rotate keeps the token’s work', () => {
+  it('a draft and an in-flight claim continue with the new token', async () => {
+    const { rotateToken } = await import('../scripts/token.js')
+    const yt = makeUser('review-rot', 'kol', { assignedOnly: true })
+    const maker = createApiToken('review-rot-maker', 'kol', { scope: 'ingest', assignees: [yt.id] })
+    const poster = createApiToken('review-rot-poster', 'kol', { scope: 'poster', userId: yt.id })
+    const draft = (await call(app, 'POST', '/api/ingest/contents', { token: maker }, { code: 'REVIEW-ROT', assignedUserId: yt.id })).json().content.id
+    const item = makeContent({ status: 'READY', assignedUserId: yt.id })
+    assert.equal((await call(app, 'POST', `/api/contents/${item}/claim`, { token: poster })).statusCode, 200)
+
+    const newMaker = rotateToken('review-rot-maker')
+    const newPoster = rotateToken('review-rot-poster')
+
+    assert.equal((await call(app, 'GET', `/api/ingest/contents/${draft}`, { token: newMaker })).statusCode, 200)
+    assert.equal((await call(app, 'GET', '/api/ingest/contents?code=REVIEW-ROT', { token: newMaker })).json().contents.length, 1)
+    assert.equal((await uploadPart(draft, newMaker, 'r.mp4', 'video/mp4')).statusCode, 201)
+    assert.equal((await call(app, 'PATCH', `/api/ingest/contents/${draft}`, { token: newMaker }, { status: 'READY' })).statusCode, 200)
+
+    const got = (await call(app, 'GET', `/api/contents/${item}`, { token: newPoster })).json().content
+    assert.equal(got.claimedByThisToken, true)
+    const link = await call(app, 'POST', '/api/publications', { token: newPoster }, {
+      contentId: item,
+      platform: 'youtube',
+      publishedUrl: 'https://example.test/rot',
+    })
+    assert.equal(link.statusCode, 200)
+    assert.equal((await call(app, 'POST', `/api/contents/${item}/complete`, { token: newPoster })).statusCode, 200)
+    // The old ones are dead.
+    assert.equal((await call(app, 'GET', `/api/ingest/contents/${draft}`, { token: maker })).statusCode, 401)
+  })
+
+  it('drop-box files follow the new token id too', async () => {
+    const { rotateToken } = await import('../scripts/token.js')
+    const worker = createApiToken('review-rot-files', 'kol', { scope: 'files', filePrefix: 'rot/' })
+    await app.inject({ method: 'PUT', url: '/api/files/rot/a', headers: { authorization: `Bearer ${worker}` }, payload: 'a' })
+    rotateToken('review-rot-files')
+    const fresh = db.select().from(apiTokens).where(eq(apiTokens.name, 'review-rot-files')).all().find((t) => !t.revokedAt)!
+    assert.equal(db.select().from(files).where(eq(files.key, 'rot/a')).get()!.createdByToken, fresh.id)
   })
 })
