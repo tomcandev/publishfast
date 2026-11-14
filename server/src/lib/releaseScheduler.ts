@@ -2,6 +2,7 @@ import { and, eq, isNotNull, lte } from 'drizzle-orm'
 import { db } from '../db/index.js'
 import { contents } from '../db/schema.js'
 import { sweepExpiredFiles } from './files.js'
+import { pruneIfDue, pruneSettingLine } from './prune.js'
 import { sweepUploads } from './uploads.js'
 
 let intervalTimer: NodeJS.Timeout | null = null
@@ -47,11 +48,29 @@ async function runOnce() {
   } catch (err) {
     console.warn('Error sweeping uploads:', err)
   }
+  // ...and, once a day when PRUNE_PUBLISHED_AFTER_DAYS is set, the media of done posts (section 14).
+  try {
+    const r = await pruneIfDue()
+    if (r) {
+      console.log(
+        `Media prune: deleted ${r.deleted} file(s), ${formatMb(r.bytesFreed ?? 0)} freed ` +
+          `(${r.alreadyMissing} already missing, ${r.failed} failed, ${r.changed} skipped as changed, ` +
+          `${r.leftoversDeleted} leftover(s) from earlier runs)`,
+      )
+    }
+  } catch (err) {
+    console.warn('Error pruning media:', err)
+  }
+}
+
+function formatMb(bytes: number) {
+  return `${(bytes / 1024 ** 2).toFixed(1)} MB`
 }
 
 /** Same pattern as the reminder scheduler: every 60 seconds, first run 5 seconds after start. */
 export function startReleaseScheduler() {
   if (intervalTimer) return
+  console.log(pruneSettingLine())
   intervalTimer = setInterval(() => void runOnce(), 60000)
   setTimeout(() => void runOnce(), 5000)
 }

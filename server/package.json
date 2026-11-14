@@ -13,6 +13,7 @@
     "seed": "tsx src/scripts/seed.ts",
     "track-metrics": "tsx src/scripts/track-metrics.ts",
     "token": "tsx src/scripts/token.ts",
+    "prune": "tsx src/scripts/prune.ts",
     "test": "node --import tsx --test src/**/*.test.ts"
   },
   "dependencies": {

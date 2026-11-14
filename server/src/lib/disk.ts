@@ -63,13 +63,19 @@ async function freeSpace(dir: string) {
   return Number(s.bavail) * Number(s.bsize)
 }
 
+/** Free and total bytes of the disk holding `dir` (the admin storage table). */
+export async function diskSpace(dir: string) {
+  const s = await statfs(dir)
+  return { freeBytes: await freeSpace(dir), totalBytes: Number(s.blocks) * Number(s.bsize) }
+}
+
 /** For tests only: report a fixed free space (the real disk is shared with parallel test files). */
 export function _setFreeSpaceProbe(probe: ((dir: string) => Promise<number>) | null) {
   freeSpaceProbe = probe
 }
 
 /**
- * Bytes an ingest token holds: assets of its DRAFT and READY items, plus the
+ * Bytes an ingest token holds: unpruned assets of its DRAFT and READY items, plus the
  * declared size of its unfinished uploads in parts (reserved at init).
  */
 export function ingestBytesHeld(tokenId: string) {
@@ -77,7 +83,14 @@ export function ingestBytesHeld(tokenId: string) {
     .select({ n: sql<number>`coalesce(sum(${assets.size}), 0)` })
     .from(assets)
     .innerJoin(contents, eq(contents.id, assets.contentId))
-    .where(and(eq(contents.createdByToken, tokenId), inArray(contents.status, ['DRAFT', 'READY'])))
+    .where(
+      and(
+        eq(contents.createdByToken, tokenId),
+        inArray(contents.status, ['DRAFT', 'READY']),
+        // A pruned file (an item re-opened after the prune) holds no bytes.
+        isNull(assets.prunedAt),
+      ),
+    )
     .get()
   const reserved = db
     .select({ n: sql<number>`coalesce(sum(${uploads.size}), 0)` })

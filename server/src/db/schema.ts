@@ -96,6 +96,11 @@ export const assets = sqliteTable(
     /** `file` is anything that is neither video/* nor image/* (e.g. subtitles). */
     type: text('type', { enum: ['video', 'image', 'file'] }).notNull(),
     createdAt: text('created_at').notNull().default(now),
+    /**
+     * Set when the media prune (lib/prune.ts) deleted this file: the row, its
+     * size and its item's history stay; downloads answer 410.
+     */
+    prunedAt: text('pruned_at'),
   },
   (t) => [index('assets_content_sort_idx').on(t.contentId, t.sortOrder)],
 )

@@ -39,6 +39,10 @@ function safeUploadPath(filePath: string) {
   return abs
 }
 
+function prunedReply(prunedAt: string) {
+  return { error: `Media removed ${prunedAt.slice(0, 10)}`, reason: 'pruned', prunedAt }
+}
+
 export async function assetRoutes(app: FastifyInstance) {
   app.addHook('preHandler', requireUser)
 
@@ -55,6 +59,8 @@ export async function assetRoutes(app: FastifyInstance) {
       if (!canSeeContent(asset.contentId, req.user!)) {
         return reply.code(404).send({ error: 'File not found' })
       }
+      // Deleted by the media prune after the post was done (lib/prune.ts); the row stays.
+      if (asset.prunedAt) return reply.code(410).send(prunedReply(asset.prunedAt))
 
       const abs = safeUploadPath(asset.filePath)
       if (!abs || !existsSync(abs)) return reply.code(404).send({ error: 'File no longer exists on server' })
@@ -84,6 +90,9 @@ export async function assetRoutes(app: FastifyInstance) {
       .all()
 
     if (rows.length === 0) return reply.code(404).send({ error: 'This post has no media files' })
+    // A zip missing some of its files would be posted as an incomplete carousel: refuse it whole.
+    const pruned = rows.find((a) => a.prunedAt)
+    if (pruned) return reply.code(410).send(prunedReply(pruned.prunedAt!))
 
     const archive = archiver('zip', { zlib: { level: 0 } }) // media is already compressed
     reply

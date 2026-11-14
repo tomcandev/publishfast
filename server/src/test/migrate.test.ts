@@ -93,6 +93,7 @@ describe('migrate() on a database from main@0c7a5bd', () => {
     assert.ok(columns('files').includes('stored_path'))
     assert.ok(columns('uploads').includes('part_size'))
     assert.ok(columns('upload_parts').includes('n'))
+    assert.ok(columns('assets').includes('pruned_at'))
   })
 
   it('keeps every old row and value; new columns are NULL or their default', () => {
@@ -104,6 +105,10 @@ describe('migrate() on a database from main@0c7a5bd', () => {
     assert.equal(one.release_at, null)
     assert.equal(one.meta, null)
     assert.equal(one.created_by_token, null)
+    const asset = sqlite.prepare('SELECT * FROM assets WHERE content_id = ?').get(one.id) as Record<string, unknown>
+    assert.equal(asset.file_path, 'stored.mp4')
+    assert.equal(asset.size, 10)
+    assert.equal(asset.pruned_at, null, 'no existing file counts as pruned')
     const kol = sqlite.prepare('SELECT * FROM users WHERE id = ?').get(kolId) as Record<string, unknown>
     assert.equal(kol.assigned_only, 0)
     assert.equal(kol.notes, 'a note')

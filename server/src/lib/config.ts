@@ -15,6 +15,14 @@ function resolveFromRoot(p: string) {
 
 const dataDir = resolveFromRoot(process.env.DATA_DIR ?? './data')
 
+/** A positive whole number of days (at most 3650), or 0 (= off) for anything else. */
+export function parsePruneDays(raw: string | undefined) {
+  const text = (raw ?? '').trim()
+  if (!/^\d{1,4}$/.test(text)) return 0
+  const days = Number(text)
+  return days > 0 && days <= 3650 ? days : 0
+}
+
 export const config = {
   port: Number(process.env.PORT ?? 8055),
   host: process.env.HOST ?? '127.0.0.1',
@@ -41,6 +49,13 @@ export const config = {
    * owner's decision, so it is never a side effect of an upgrade.
    */
   sweepOrphanUploads: ['1', 'true'].includes((process.env.SWEEP_ORPHAN_UPLOADS ?? '').trim().toLowerCase()),
+  /**
+   * Media prune (lib/prune.ts): the files of PUBLISHED items are deleted this
+   * many days after their newest publication. Unset, 0 or anything that is
+   * not a whole number of days = never (the default): deleting people's
+   * files is the owner's decision, never a side effect of an upgrade.
+   */
+  prunePublishedAfterDays: parsePruneDays(process.env.PRUNE_PUBLISHED_AFTER_DAYS),
   /** Unfinished part uploads, one folder per upload. */
   partsDir: join(dataDir, 'upload-parts'),
   /** Drop box: total bytes under one token prefix (admin-power tokens exempt). */

@@ -11,6 +11,7 @@ import { config } from '../lib/config.js'
 import { requireAdmin } from '../lib/guards.js'
 import { stripTokenIds, withClaimInfo } from '../lib/holds.js'
 import { getHookPerformanceSummary, syncAllPublicationMetrics } from '../lib/metrics.js'
+import { storageReport } from '../lib/prune.js'
 
 const userSchema = z.object({
   username: z.string().min(2).max(31),
@@ -274,6 +275,9 @@ export async function adminRoutes(app: FastifyInstance) {
     const { hours } = (req.body ?? {}) as { hours?: number }
     return { released: releaseStaleClaims(hours && hours > 0 ? hours : 24) }
   })
+
+  /** Bytes and file counts by item status, pruned so far, drop box, unfinished uploads, free disk. */
+  app.get('/api/admin/storage', async () => storageReport())
 
   /* ---------- API tokens for the AI pipeline ---------- */
 

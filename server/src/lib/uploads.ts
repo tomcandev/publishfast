@@ -1,10 +1,21 @@
 import { readdir, rm, stat, unlink } from 'node:fs/promises'
 import { randomUUID } from 'node:crypto'
-import { join } from 'node:path'
+import { join, resolve, sep } from 'node:path'
 import { and, eq, inArray, isNull, lt, ne, or, sql } from 'drizzle-orm'
 import { db } from '../db/index.js'
 import { assets, contents, uploads } from '../db/schema.js'
 import { config } from './config.js'
+
+/**
+ * Absolute path of a stored upload (assets.file_path), or null when the
+ * stored name would point anywhere but a file inside uploads/. Callers that
+ * delete never touch a null path.
+ */
+export function uploadFilePath(filePath: string) {
+  const root = resolve(config.uploadsDir)
+  const abs = resolve(join(root, filePath))
+  return abs.startsWith(root + sep) ? abs : null
+}
 
 /** Unfinished uploads older than this are swept. */
 export const UPLOAD_TTL_MS = 24 * 3_600_000

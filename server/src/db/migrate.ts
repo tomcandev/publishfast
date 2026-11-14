@@ -28,6 +28,7 @@ const addedColumns: [table: string, column: string, ddl: string][] = [
   ['api_tokens', 'file_prefix', 'TEXT'],
   ['uploads', 'completing_at', 'TEXT'],
   ['upload_parts', 'file', 'TEXT'],
+  ['assets', 'pruned_at', 'TEXT'],
 ]
 
 const statements = [
@@ -82,7 +83,8 @@ const statements = [
     size INTEGER NOT NULL,
     sort_order INTEGER NOT NULL DEFAULT 0,
     type TEXT NOT NULL,
-    created_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ','now'))
+    created_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ','now')),
+    pruned_at TEXT
   )`,
   `CREATE INDEX IF NOT EXISTS assets_content_sort_idx ON assets (content_id, sort_order)`,
 
