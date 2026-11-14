@@ -16,7 +16,10 @@ import {
   byteLimit,
   bytesInFlight,
   ingestBytesHeld,
-  reserveInFlight,
+  reserveForReply,
+  scopedUploader,
+  takeUploadSlot,
+  TOO_MANY_UPLOADS,
   writeLimited,
 } from '../lib/disk.js'
 import { classifyUpload, isActiveContent } from '../lib/download.js'
@@ -215,7 +218,10 @@ export async function uploadRoutes(app: FastifyInstance) {
       return reply.code(413).header('Connection', 'close').send({ error: tooLarge })
     }
     if (await belowFreeSpaceFloor(config.partsDir, max)) return reply.code(507).send({ error: NO_SPACE })
-    const release = reserveInFlight(null, max)
+    const slot = takeUploadSlot(reply, scopedUploader(req))
+    if (!slot) return reply.code(429).send(TOO_MANY_UPLOADS)
+    // Only what this part announced (its Content-Length, or its expected length when chunked).
+    const release = reserveForReply(reply, null, Number.isFinite(declared) ? declared : max)
 
     try {
       await mkdir(partsFolder(upload.id), { recursive: true })
@@ -276,6 +282,7 @@ export async function uploadRoutes(app: FastifyInstance) {
       return { part: n, size }
     } finally {
       release()
+      slot()
     }
   })
 
@@ -350,7 +357,7 @@ export async function uploadRoutes(app: FastifyInstance) {
 
     // 2. Join the parts in order, hashing and counting, into a file inside the
     //    upload's own folder (so a crash leaves it where the sweep removes it).
-    const release = reserveInFlight(null, upload.size)
+    const release = reserveForReply(reply, null, upload.size)
     const joined = join(partsFolder(upload.id), `joined.${randomUUID()}.tmp`)
     const stored = storedName(upload.name)
     const abs = join(config.uploadsDir, stored)

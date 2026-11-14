@@ -7,7 +7,7 @@ import { and, asc, eq, gt, sql } from 'drizzle-orm'
 import { db } from '../db/index.js'
 import { files, type StoredFile } from '../db/schema.js'
 import { config } from '../lib/config.js'
-import { NO_SPACE, belowFreeSpaceFloor, reserveInFlight, writeLimited } from '../lib/disk.js'
+import { NO_SPACE, TOO_MANY_UPLOADS, belowFreeSpaceFloor, reserveForReply, scopedUploader, takeUploadSlot, writeLimited } from '../lib/disk.js'
 import { sendFileHeaders } from '../lib/download.js'
 import { isValidFileKey, removeStoredFile, storedFilePath } from '../lib/files.js'
 import { requireFileToken } from '../lib/guards.js'
@@ -100,8 +100,12 @@ export async function fileRoutes(app: FastifyInstance) {
       return reply.code(507).header('Connection', 'close').send({ error: NO_SPACE })
     }
 
-    // Counted as in flight (for the free-space floor of concurrent uploads) until the end.
-    const release = reserveInFlight(null, Number.isFinite(declared) ? declared : max)
+    // At most a few uploads at once per scoped token, so silent connections cannot hold the headroom.
+    const slot = takeUploadSlot(reply, scopedUploader(req))
+    if (!slot) return reply.code(429).send(TOO_MANY_UPLOADS)
+    // Counted as in flight (for the free-space floor) until the end: what this request announced,
+    // or the per-file cap when it is chunked. Also released when the response closes.
+    const release = reserveForReply(reply, null, Number.isFinite(declared) ? declared : max)
     try {
       const storedPath = `${randomUUID()}.bin`
       const abs = storedFilePath(storedPath)!
@@ -179,6 +183,7 @@ export async function fileRoutes(app: FastifyInstance) {
         .send({ key, size: values.size, sha256: values.sha256, expiresAt: values.expiresAt })
     } finally {
       release()
+      slot()
     }
   })
 

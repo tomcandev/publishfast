@@ -9,7 +9,19 @@ import { z } from 'zod'
 import { db } from '../db/index.js'
 import { CONTENT_TYPES, assets, contents, publications, users, type Content } from '../db/schema.js'
 import { config } from '../lib/config.js'
-import { NO_SPACE, belowFreeSpaceFloor, byteLimit, bytesInFlight, httpError, ingestBytesHeld, reserveInFlight } from '../lib/disk.js'
+import {
+  NO_SPACE,
+  TOO_MANY_UPLOADS,
+  belowFreeSpaceFloor,
+  byteLimit,
+  bytesInFlight,
+  httpError,
+  ingestBytesHeld,
+  isAborted,
+  reserveForReply,
+  scopedUploader,
+  takeUploadSlot,
+} from '../lib/disk.js'
 import { classifyUpload, isActiveContent } from '../lib/download.js'
 import { META_MAX_BYTES, isoTime, jsonObject } from '../lib/fields.js'
 import { requireIngest } from '../lib/guards.js'
@@ -291,13 +303,18 @@ export async function ingestRoutes(app: FastifyInstance) {
     let reserve = declared
     if (scoped) {
       const free = config.maxIngestBytes - ingestBytesHeld(scoped.id) - bytesInFlight(scoped.id)
-      // With a Content-Length the whole body is reserved; without one, everything that is left.
-      allowance = declared > 0 ? declared : free
+      // Reserve what the request announced (its Content-Length); when chunked, the per-file cap,
+      // never more than the token's remaining cap.
+      allowance = declared > 0 ? declared : Math.min(config.maxUploadBytes, free)
       reserve = allowance
       if (free <= 0 || declared > free) return reply.code(413).send({ error: OVER_CAP })
     }
-    const release = reserveInFlight(scoped?.id ?? null, reserve)
+    const slot = takeUploadSlot(reply, scopedUploader(req))
+    if (!slot) return reply.code(429).send(TOO_MANY_UPLOADS)
+    const release = reserveForReply(reply, scoped?.id ?? null, reserve)
     try {
+      // The client may have gone while we checked: then the multipart stream would never end.
+      if (isAborted(req.raw)) return reply.code(400).send({ error: 'Upload aborted' })
       const nextOrder =
         (db
           .select({ n: sql<number>`coalesce(max(${assets.sortOrder}), -1)` })
@@ -378,6 +395,7 @@ export async function ingestRoutes(app: FastifyInstance) {
       })
     } finally {
       release()
+      slot()
     }
   })
 

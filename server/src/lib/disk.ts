@@ -98,6 +98,10 @@ export function byteLimit(limit: number, statusCode: number, message: string) {
  * any error.
  */
 export async function writeLimited(source: Readable, limit: Transform, dest: string) {
+  // A client may have sent its headers and gone while the route awaited
+  // something: such a stream never ends and never closes again. Fail now,
+  // before any file is opened.
+  if (isAborted(source)) throw httpError(400, 'Upload aborted')
   const onError = (err: Error) => limit.destroy(err)
   const onClose = () => {
     if (!source.readableEnded) limit.destroy(httpError(400, 'Upload aborted'))
@@ -115,4 +119,66 @@ export async function writeLimited(source: Readable, limit: Transform, dest: str
     source.off('error', onError)
     source.off('close', onClose)
   }
+}
+
+/** True when a request body stream is gone before its end (client closed or aborted). */
+export function isAborted(source: Readable) {
+  const msg = source as Readable & { aborted?: boolean; complete?: boolean }
+  if (msg.complete || source.readableEnded) return false
+  return source.destroyed || msg.aborted === true
+}
+
+type ReplyLike = { raw: { once(event: 'close', fn: () => void): unknown } }
+
+/**
+ * Reserve in-flight bytes for one request, released by the route's finally
+ * and, as a backstop, when the response closes (a handler that is stuck or
+ * a connection that dies never keeps headroom).
+ */
+export function reserveForReply(reply: ReplyLike, tokenId: string | null, bytes: number) {
+  const release = reserveInFlight(tokenId, bytes)
+  reply.raw.once('close', release)
+  return release
+}
+
+/** At most this many upload requests at once per scoped token (ingest, files). */
+export const MAX_UPLOADS_PER_TOKEN = 4
+const uploadsByToken = new Map<string, number>()
+
+export function uploadsInProgress(tokenId: string) {
+  return uploadsByToken.get(tokenId) ?? 0
+}
+
+/**
+ * Takes one of the token's upload slots, or returns null when it already has
+ * MAX_UPLOADS_PER_TOKEN uploads running (answer 429). Released idempotently by
+ * the route's finally and when the response closes. Tokens with a null id
+ * (old and admin tokens, sessions) are not limited.
+ */
+export function takeUploadSlot(reply: ReplyLike, tokenId: string | null): (() => void) | null {
+  if (!tokenId) return () => {}
+  const n = uploadsInProgress(tokenId)
+  if (n >= MAX_UPLOADS_PER_TOKEN) return null
+  uploadsByToken.set(tokenId, n + 1)
+  let released = false
+  const release = () => {
+    if (released) return
+    released = true
+    const left = uploadsInProgress(tokenId) - 1
+    if (left > 0) uploadsByToken.set(tokenId, left)
+    else uploadsByToken.delete(tokenId)
+  }
+  reply.raw.once('close', release)
+  return release
+}
+
+export const TOO_MANY_UPLOADS = {
+  error: `At most ${MAX_UPLOADS_PER_TOKEN} uploads at once per token`,
+  reason: 'too_many_uploads',
+}
+
+/** The token an upload counts against for the slot limit: ingest and files scopes only. */
+export function scopedUploader(req: { apiToken?: { id: string; scope: string | null } }) {
+  const scope = req.apiToken?.scope
+  return scope === 'ingest' || scope === 'files' ? req.apiToken!.id : null
 }
