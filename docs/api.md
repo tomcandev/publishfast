@@ -199,9 +199,13 @@ the current `status`. Once back in `DRAFT` the token may patch, upload and delet
 ### `DELETE /api/ingest/contents/:id/assets/:assetId` · `DELETE /api/ingest/contents/:id`
 Delete one asset, or the whole item with its files. `DRAFT` only (`409` otherwise).
 
-Asset `type` is `video` for `video/*`, `image` for `image/*`, and `file` for any other declared type
-(subtitles). An upload sent as `application/octet-stream` keeps the old fallback (`image`) unless its
-name ends in `.srt`, `.vtt`, `.ass`, `.ssa`, `.txt`, `.json`, `.csv`, `.md`, `.pdf` or `.zip`.
+Asset `type`: a declared `video/*` is `video` and `image/*` is `image`. Otherwise the file name decides:
+image extensions (`.jpg .jpeg .png .webp .gif .heic .heif`) are `image` and video extensions
+(`.mp4 .m4v .mov .webm`) are `video`, stored with their real type; `.srt .vtt .ass .ssa .txt .json .csv
+.md .pdf .zip` are `file`; anything else keeps the old behaviour and is an `image`. This covers parts sent
+with no type, `application/octet-stream` or `binary/octet-stream`. Scoped tokens may not upload svg,
+html or xml. Downloads are inline only for png, jpeg, webp, gif, mp4, quicktime and webm; everything
+else is an `application/octet-stream` attachment, always with `nosniff` and a sandbox CSP.
 
 ### `POST /api/ingest/contents/:id/assets`
 

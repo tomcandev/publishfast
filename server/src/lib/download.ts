@@ -92,3 +92,24 @@ export function sendFileHeaders(
   if (opts.size !== undefined) reply.header('Content-Length', String(opts.size))
   return reply
 }
+
+/** Names that are plainly not media (subtitles, text, archives). */
+export const NON_MEDIA_EXT = new Set(['.srt', '.vtt', '.ass', '.ssa', '.txt', '.json', '.csv', '.md', '.pdf', '.zip'])
+
+/**
+ * The asset type and stored mime of an upload: one rule for every upload
+ * route. A declared video/* or image/* wins; otherwise the file name
+ * decides (known image or video extensions get their real type, so they
+ * preview); subtitle, text and archive names are `file`; anything else keeps
+ * the old behaviour and is an `image` (old pipelines upload untyped parts).
+ */
+export function classifyUpload(declared: string, filename: string): { type: 'video' | 'image' | 'file'; mime: string } {
+  const mime = baseMime(declared) || 'application/octet-stream'
+  if (mime.startsWith('video/')) return { type: 'video', mime }
+  if (mime.startsWith('image/')) return { type: 'image', mime }
+  const ext = extname(filename).toLowerCase()
+  if (IMAGE_EXT[ext]) return { type: 'image', mime: IMAGE_EXT[ext]! }
+  if (VIDEO_EXT[ext]) return { type: 'video', mime: VIDEO_EXT[ext]! }
+  if (NON_MEDIA_EXT.has(ext)) return { type: 'file', mime }
+  return { type: 'image', mime }
+}

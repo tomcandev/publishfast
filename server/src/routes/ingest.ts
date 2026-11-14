@@ -9,7 +9,7 @@ import { z } from 'zod'
 import { db } from '../db/index.js'
 import { CONTENT_TYPES, assets, contents, publications, users, type Content } from '../db/schema.js'
 import { config } from '../lib/config.js'
-import { isActiveContent } from '../lib/download.js'
+import { classifyUpload, isActiveContent } from '../lib/download.js'
 import { META_MAX_BYTES, isoTime, jsonObject } from '../lib/fields.js'
 import { requireIngest } from '../lib/guards.js'
 
@@ -89,24 +89,6 @@ const HAS_PUBLICATIONS = {
 }
 
 const ASSIGNEE_REQUIRED = 'This token must assign every item to one of its assignees'
-
-/** Names whose bytes are clearly not media, for uploads sent as application/octet-stream. */
-const NON_MEDIA_EXT = new Set(['.srt', '.vtt', '.ass', '.ssa', '.txt', '.json', '.csv', '.md', '.pdf', '.zip'])
-
-/**
- * Asset type. video/* and image/* as always; any other declared type is a
- * `file` (subtitles and the like). A generic application/octet-stream keeps
- * the old fallback (`image`), which existing pipelines that upload without a
- * type rely on, unless the name is plainly not media.
- */
-function assetType(mime: string, filename: string): 'video' | 'image' | 'file' {
-  if (mime.startsWith('video/')) return 'video'
-  if (mime.startsWith('image/')) return 'image'
-  if (mime === 'application/octet-stream') {
-    return NON_MEDIA_EXT.has(extname(filename).toLowerCase()) ? 'file' : 'image'
-  }
-  return 'file'
-}
 
 async function unlinkUpload(filePath: string) {
   const root = config.uploadsDir
@@ -307,7 +289,7 @@ export async function ingestRoutes(app: FastifyInstance) {
           }
         }
 
-        const mime = part.mimetype || 'application/octet-stream'
+        const { type, mime } = classifyUpload(part.mimetype || '', part.filename || '')
         const assetId = randomUUID()
         db.insert(assets)
           .values({
@@ -318,7 +300,7 @@ export async function ingestRoutes(app: FastifyInstance) {
             mime,
             size: (await import('node:fs')).statSync(abs).size,
             sortOrder: nextOrder + index,
-            type: assetType(mime, part.filename || ''),
+            type,
           })
           .run()
         created.push(assetId)

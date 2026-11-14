@@ -217,7 +217,7 @@ describe('ingest: withdraw, delete, file assets', () => {
     assert.equal((await call(app, 'DELETE', `/api/ingest/contents/${theirs}`, { token: maker })).statusCode, 404)
   })
 
-  it('asset type: video/*, image/*, `file` for other types; octet-stream keeps the old fallback', async () => {
+  it('asset type: video/*, image/*, `file` for subtitle-like names; untyped parts go by extension', async () => {
     const created = await call(app, 'POST', '/api/ingest/contents', { token: maker }, { code: 'NHI-TYPES', assignedUserId: yt.id })
     const id = created.json().content.id
     const cases: [string, string, string][] = [
@@ -226,7 +226,8 @@ describe('ingest: withdraw, delete, file assets', () => {
       ['n14.srt', 'application/x-subrip', 'file'],
       ['n14.vtt', 'text/vtt', 'file'],
       ['n14b.srt', 'application/octet-stream', 'file'],
-      ['legacy.mp4', 'application/octet-stream', 'image'], // unchanged behaviour for untyped uploads
+      ['legacy.mp4', 'application/octet-stream', 'video'], // untyped: decided by extension (review finding 6)
+      ['legacy.bin', 'application/octet-stream', 'image'], // unknown name: the old fallback
     ]
     for (const [name, mime, type] of cases) {
       const { payload, headers } = multipartFile(name, mime, Buffer.from('x'))

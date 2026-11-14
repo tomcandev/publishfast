@@ -245,3 +245,29 @@ describe('finding 4: withdraw and delete never erase publications or metric hist
     assert.ok(db.select().from(assets).where(eq(assets.id, asset.id)).get())
   })
 })
+
+describe('finding 6: untyped uploads from the old pipeline keep showing up', () => {
+  it('no Content-Type, application/octet-stream and binary/octet-stream are typed by extension', async () => {
+    const id = makeContent({ status: 'DRAFT' })
+    const cases: [string, string | null, string, string][] = [
+      ['s1.jpg', null, 'image', 'image/jpeg'],
+      ['s2.png', 'application/octet-stream', 'image', 'image/png'],
+      ['s3.jpeg', 'binary/octet-stream', 'image', 'image/jpeg'],
+      ['v1.mp4', null, 'video', 'video/mp4'],
+      ['v2.mov', 'binary/octet-stream', 'video', 'video/quicktime'],
+      ['c1.srt', null, 'file', 'text/plain'],
+      ['c2.vtt', 'binary/octet-stream', 'file', 'binary/octet-stream'],
+      ['u1.dat', null, 'image', 'text/plain'], // unknown: the old behaviour
+      ['u2', 'binary/octet-stream', 'image', 'binary/octet-stream'],
+    ]
+    for (const [name, mime, type, stored] of cases) {
+      assert.equal((await uploadPart(id, legacyAdmin, name, mime)).statusCode, 201, name)
+      const row = assetByName(name)
+      assert.equal(row.type, type, name)
+      assert.equal(row.mime, stored, name)
+    }
+    // And the image previews inline with the right type.
+    const res = await call(app, 'GET', `/api/assets/${assetByName('s1.jpg').id}`, { cookie: adminCookie })
+    assert.equal(res.headers['content-type'], 'image/jpeg')
+  })
+})
