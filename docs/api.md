@@ -361,6 +361,9 @@ node server/dist/scripts/token.js <command> …
   job) if they ever matter.
 - A person cannot correct a link on an item an agent's token completed (it stays held by that token:
   `409 held_by_agent`). An admin can.
+- If the process dies in the instant between moving a joined upload into `uploads/` and committing its
+  asset row, that one file stays with no row. Files like that (and older ones from deleted contents) are
+  only removed when `SWEEP_ORPHAN_UPLOADS=1` is set; it is off by default.
 
 ## Health
 

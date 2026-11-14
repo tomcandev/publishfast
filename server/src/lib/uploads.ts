@@ -105,7 +105,8 @@ export async function sweepUploads(now = new Date()) {
   for (const name of folders) {
     if (UUID.test(name) && !known.has(name)) await rm(partsFolder(name), { recursive: true, force: true }).catch(() => {})
   }
-  await sweepOrphanUploadFiles(now)
+  // Only when the owner turned it on (SWEEP_ORPHAN_UPLOADS); never by default.
+  if (config.sweepOrphanUploads) await sweepOrphanUploadFiles(now)
   return removed
 }
 
@@ -113,8 +114,8 @@ export async function sweepUploads(now = new Date()) {
 export const ORPHAN_MIN_AGE_MS = 3_600_000
 
 /**
- * Deletes files in uploads/ that no asset row names and that are older than
- * one hour (e.g. left by a process that died between moving a joined upload
+ * Only called when SWEEP_ORPHAN_UPLOADS is on. Deletes files in uploads/ that
+ * no asset row names and that are older than one hour (e.g. left by a process that died between moving a joined upload
  * into place and committing its row). Never younger ones: a multipart
  * upload's file exists on disk before its row.
  */

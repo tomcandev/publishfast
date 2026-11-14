@@ -34,6 +34,13 @@ export const config = {
    * real upload; stops a client that withholds its body from holding a socket.
    */
   requestTimeoutMs: Number(process.env.REQUEST_TIMEOUT_MS ?? 30 * 60_000),
+  /**
+   * Off by default. When on, the scheduler deletes files in uploads/ that no
+   * asset row names and that are older than one hour. Existing installs may
+   * hold many such files from contents deleted long ago; deleting them is the
+   * owner's decision, so it is never a side effect of an upgrade.
+   */
+  sweepOrphanUploads: ['1', 'true'].includes((process.env.SWEEP_ORPHAN_UPLOADS ?? '').trim().toLowerCase()),
   /** Unfinished part uploads, one folder per upload. */
   partsDir: join(dataDir, 'upload-parts'),
   /** Drop box: total bytes under one token prefix (admin-power tokens exempt). */

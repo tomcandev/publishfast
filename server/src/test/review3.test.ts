@@ -246,21 +246,39 @@ describe('S2: link schemes as a browser parses them', () => {
 })
 
 describe('orphan files in uploads/', () => {
-  it('the sweep deletes files with no asset row older than one hour, never younger ones', async () => {
-    const old = join(config.uploadsDir, 'orphan-old.mp4')
-    const young = join(config.uploadsDir, 'orphan-young.mp4')
+  function plant() {
+    const twoHoursAgo = new Date(Date.now() - 2 * 3_600_000)
+    const old = join(config.uploadsDir, `orphan-old-${randomBytes(3).toString('hex')}.mp4`)
+    const young = join(config.uploadsDir, `orphan-young-${randomBytes(3).toString('hex')}.mp4`)
     writeFileSync(old, 'x')
     writeFileSync(young, 'y')
-    const twoHoursAgo = new Date(Date.now() - 2 * 3_600_000)
     utimesSync(old, twoHoursAgo, twoHoursAgo)
     // A file that has its row is kept whatever its age.
     const id = makeContent({ status: 'DRAFT' })
-    const kept = join(config.uploadsDir, 'kept.mp4')
+    const keptName = `kept-${randomBytes(3).toString('hex')}.mp4`
+    const kept = join(config.uploadsDir, keptName)
     writeFileSync(kept, 'k')
     utimesSync(kept, twoHoursAgo, twoHoursAgo)
-    db.insert(assets).values({ id: `a-${id}`, contentId: id, filePath: 'kept.mp4', originalName: 'k.mp4', mime: 'video/mp4', size: 1, type: 'video' }).run()
+    db.insert(assets).values({ id: `a-${id}`, contentId: id, filePath: keptName, originalName: 'k.mp4', mime: 'video/mp4', size: 1, type: 'video' }).run()
+    return { old, young, kept }
+  }
 
+  it('is off by default: an old orphan survives a scheduler tick', async () => {
+    assert.equal(config.sweepOrphanUploads, false)
+    const { old, young, kept } = plant()
     await sweepUploads()
+    assert.ok(existsSync(old), 'nothing in uploads/ is deleted unless SWEEP_ORPHAN_UPLOADS is on')
+    assert.ok(existsSync(young) && existsSync(kept))
+  })
+
+  it('when SWEEP_ORPHAN_UPLOADS is on, deletes files with no row older than one hour, never younger ones', async () => {
+    const { old, young, kept } = plant()
+    config.sweepOrphanUploads = true
+    try {
+      await sweepUploads()
+    } finally {
+      config.sweepOrphanUploads = false
+    }
     assert.ok(!existsSync(old), 'old orphan removed')
     assert.ok(existsSync(young), 'young file kept (its row may still be on the way)')
     assert.ok(existsSync(kept), 'file with a row kept')
