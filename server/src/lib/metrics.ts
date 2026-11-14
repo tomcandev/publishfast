@@ -10,6 +10,7 @@ import {
   allowedTikTokUrl,
   fetchTikTokPage,
   parseTikTokVideoPage,
+  readTikwm,
   soundOf,
   type ParsedSound,
   type TikTokPage,
@@ -106,7 +107,6 @@ export function inferHookId(title?: string | null, caption?: string | null): str
 
 /** YouTube hosts the sync reads (https only, through the guard). */
 export const YOUTUBE_HOSTS: ReadonlySet<string> = new Set(['www.youtube.com', 'youtube.com', 'm.youtube.com', 'youtu.be'])
-const TIKWM_HOSTS: ReadonlySet<string> = new Set(['www.tikwm.com'])
 
 const zeroResult = (): MetricResult => ({ views: 0, likes: 0, comments: 0, shares: 0, error: null })
 const failed = (error: string): MetricResult => ({ views: 0, likes: 0, comments: 0, shares: 0, error })
@@ -133,33 +133,6 @@ export async function fetchSocialMetrics(rawUrl: string, _platform?: string): Pr
   if (youtube) return fetchYouTubeMetrics(youtube.href)
 
   return zeroResult()
-}
-
-/** tikwm's answer for a guard-passed TikTok URL, query string removed; null when it has nothing. */
-async function readTikwm(target: URL) {
-  const clean = new URL(target.href)
-  clean.search = ''
-  clean.hash = ''
-  try {
-    const page = await guardedFetch(`https://www.tikwm.com/api/?url=${encodeURIComponent(clean.href)}`, TIKWM_HOSTS, {
-      accept: 'application/json',
-    })
-    if (page.status < 200 || page.status >= 300) return null
-    const data = JSON.parse(page.body) as {
-      code?: number
-      data?: {
-        play_count?: number
-        digg_count?: number
-        comment_count?: number
-        share_count?: number
-        collect_count?: number
-        music_info?: unknown
-      }
-    }
-    return data && data.code === 0 && data.data ? data.data : null
-  } catch {
-    return null
-  }
 }
 
 async function fetchTikTokMetrics(url: string): Promise<MetricResult> {

@@ -16,12 +16,23 @@ import {
   withReadSlot,
   type SightingInput,
 } from '../lib/sounds.js'
-import { TikTokFetchError, allowedTikTokUrl, copyText, fetchTikTokPage, parseTikTokVideoPage } from '../lib/tiktok.js'
+import {
+  TikTokFetchError,
+  allowedTikTokUrl,
+  copyText,
+  fetchTikTokPage,
+  parseTikTokVideoPage,
+  parseTikwmVideo,
+  readTikwm,
+  type ParsedSound,
+  type ParsedVideo,
+} from '../lib/tiktok.js'
 
 /**
  * The sound bank (contract section 13). Sounds enter it only from what the
- * server itself reads on a TikTok video page; callers send video links,
- * never sound data. Every page read goes through lib/tiktok.ts's guard.
+ * server itself reads about a TikTok video: the page, else tikwm. Callers
+ * send video links, never sound data. Every read goes through lib/tiktok.ts's
+ * guard (tikwm is asked only about a link that passed it).
  */
 
 export const MAX_SIGHTINGS_PER_CALL = 50
@@ -81,25 +92,53 @@ async function readSighting(
   who: { admin: boolean; person: boolean },
 ): Promise<SightingResult> {
   const base = { videoUrl: input.videoUrl }
-  if (!allowedTikTokUrl(input.videoUrl)) return { ...base, status: 'unreadable', reason: 'refused' }
+  const allowed = allowedTikTokUrl(input.videoUrl)
+  if (!allowed) return { ...base, status: 'unreadable', reason: 'refused' }
   return withReadSlot(async (): Promise<SightingResult> => {
     if (Date.now() > deadline) return { ...base, status: 'unreadable', reason: 'time_budget' }
-    let page
-    try {
-      page = await fetchTikTokPage(input.videoUrl)
-    } catch (err) {
-      return { ...base, status: 'unreadable', reason: err instanceof TikTokFetchError ? err.reason : 'unreachable' }
+    let read = await readPage(input.videoUrl)
+    if ('reason' in read) {
+      // TikTok serves some servers (the VPS) an empty shell page: ask tikwm about the same link,
+      // unless the call is out of time. Nothing from it: the page's reason stands.
+      const fromTikwm = Date.now() > deadline ? null : await readViaTikwm(new URL(read.url ?? allowed.href))
+      if (!fromTikwm) return { ...base, status: 'unreadable', reason: read.reason }
+      read = fromTikwm
     }
-    if (page.status < 200 || page.status >= 300) return { ...base, status: 'unreadable', reason: 'not_found' }
-    const parsed = parseTikTokVideoPage(page.body)
-    if (!parsed?.sound) return { ...base, status: 'unreadable', reason: 'no_sound' }
+    const { parsed, url } = read
     // A sighting is a video outside our own posts; ours get their sound from the sync.
     if (isOurVideo(parsed.videoId)) {
       return { ...base, status: 'known', soundId: parsed.sound.id, ...(who.admin ? { reason: 'our_post' } : {}) }
     }
-    const status = recordSighting({ ...parsed, sound: parsed.sound }, page.url, input, tokenId)
+    const status = recordSighting(parsed, url, input, tokenId)
     return { ...base, status, soundId: parsed.sound.id }
   }, who.person)
+}
+
+type Read = { parsed: ParsedVideo & { sound: ParsedSound }; url: string }
+
+/** The video page, through the guard: what it says, or why not (and the final URL when a page came back). */
+async function readPage(videoUrl: string): Promise<Read | { reason: string; url?: string }> {
+  let page
+  try {
+    page = await fetchTikTokPage(videoUrl)
+  } catch (err) {
+    return { reason: err instanceof TikTokFetchError ? err.reason : 'unreachable' }
+  }
+  if (page.status < 200 || page.status >= 300) return { reason: 'not_found', url: page.url }
+  const parsed = parseTikTokVideoPage(page.body)
+  if (!parsed?.sound) return { reason: 'no_sound', url: page.url }
+  return { parsed: { ...parsed, sound: parsed.sound }, url: page.url }
+}
+
+/**
+ * tikwm's answer for a guard-passed link, when it names the video and its
+ * sound. The stored URL is the canonical one from tikwm's author and id
+ * (else the link without its query): tikwm may have resolved a short link itself.
+ */
+async function readViaTikwm(target: URL): Promise<Read | null> {
+  const parsed = parseTikwmVideo(await readTikwm(target))
+  if (!parsed?.sound || !parsed.videoId) return null
+  return { parsed: { ...parsed, sound: parsed.sound }, url: target.href }
 }
 
 function callerKey(req: FastifyRequest) {

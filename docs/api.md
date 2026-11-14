@@ -365,8 +365,13 @@ token prefix is capped at `MAX_FILES_PREFIX_BYTES` (`413`; admin tokens exempt),
 ## Sounds — a ranked bank of TikTok sounds
 
 People attach a sound by hand in the TikTok app; the bank tells them which one to look for and learns
-which ones worked for us. Sounds enter it **only from what the server itself reads on a TikTok video
-page**: callers send video links, never sound names or counts (extra fields are ignored).
+which ones worked for us. Sounds enter it **only from what the server itself reads about a TikTok video:
+the page, else tikwm**: callers send video links, never sound names or counts (extra fields are ignored).
+When the page read fails or the page carries no sound (TikTok serves some servers an empty shell page),
+the server asks tikwm about the same guard-passed link without its query string, in the same read slot
+and only before the call's 75 s budget runs out; a tikwm answer counts only when it names the video id and
+a sound, and the video is stored under `https://www.tiktok.com/@<author>/video/<id>`. When tikwm has
+nothing, the page's `reason` stands.
 
 **The URL guard** (`guardedFetch` in `server/src/lib/guardedFetch.ts`, used for every server-side read
 of a link: TikTok pages, the sync's YouTube pages and tikwm): parsed with the URL parser; `https` only;

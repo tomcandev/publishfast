@@ -38,15 +38,24 @@ let app: FastifyInstance
 let requested: string[] = []
 let realFetch: typeof fetch
 let hold: Promise<void> | null = null
+/** What the fake tikwm answers, by the TikTok link it is asked about; anything else is `{code: -1}`. */
+const tikwmAnswers = new Map<string, unknown>()
+/** The ~1.5 KB JS shell TikTok serves the VPS for every video page: no video data. */
+const SHELL = `<!DOCTYPE html><html><head><meta charset="utf-8"><title>TikTok</title><script>${'/*shell*/'.repeat(150)}</script></head><body></body></html>`
+const SHELL_PREFIX = 'https://www.tiktok.com/@shell'
 
 /** A fake TikTok. Anything that is not on a TikTok host (or tikwm) fails the test. */
 function fakeTikTok(input: string | URL | Request, init?: RequestInit) {
   const url = String(input)
   requested.push(url)
   const host = new URL(url).hostname
-  if (host === 'www.tikwm.com') return new Response(JSON.stringify({ code: -1 }))
-  assert.ok(TIKTOK_HOSTS.has(host), `requested a non-TikTok host: ${url}`)
   assert.equal(init?.redirect, 'manual')
+  if (host === 'www.tikwm.com') {
+    const asked = new URL(url).searchParams.get('url') ?? ''
+    return new Response(JSON.stringify(tikwmAnswers.get(asked) ?? { code: -1 }))
+  }
+  assert.ok(TIKTOK_HOSTS.has(host), `requested a non-TikTok host: ${url}`)
+  if (url.startsWith(SHELL_PREFIX)) return new Response(SHELL)
   if (url === SHORT_URL) return new Response(null, { status: 301, headers: { location: `${ORIGINAL_CANONICAL}?_r=1&_t=x` } })
   if (url.startsWith(ORIGINAL_CANONICAL)) return new Response(fixture('tiktok-original.html'))
   if (url.startsWith(TRACK_URL)) return new Response(fixture('tiktok-track.html'))
@@ -489,5 +498,110 @@ describe('review 2: limits, sources, the ranking cache', () => {
     // …while a change through the bank clears it at once.
     await call(app, 'PATCH', '/api/admin/sounds/955555', { cookie: await sessionFor(admin.id) }, { note: 'n' })
     assert.ok((await call(app, 'GET', '/api/sounds?window=7', { cookie })).json().sounds.some((x: { id: string }) => x.id === '955555'))
+  })
+})
+
+describe('when TikTok serves the server an empty page, the sighting is read through tikwm', () => {
+  const SHELL_URL = `${SHELL_PREFIX}.one/video/7678256298554690836`
+  const TIKWM_SOUND = '7600000000000000301'
+  const tikwmData = (over: Record<string, unknown> = {}) => ({
+    code: 0,
+    msg: 'success',
+    data: {
+      id: '7678256298554690836',
+      author: { unique_id: 'moni.pte', nickname: 'Moni' },
+      create_time: 1731456000,
+      play_count: 12345,
+      digg_count: 678,
+      comment_count: 9,
+      share_count: 10,
+      collect_count: 321,
+      music_info: { id: TIKWM_SOUND, title: 'Tikwm Track', author: 'Tikwm Band', original: false },
+      ...over,
+    },
+  })
+  const tikwmAsked = () => requested.filter((u) => u.startsWith('https://www.tikwm.com/'))
+
+  beforeEach(() => {
+    _resetDailyCaps()
+    tikwmAnswers.clear()
+  })
+
+  it('a shell page and a tikwm answer with a sound: recorded with tikwm’s author, id and counts', async () => {
+    tikwmAnswers.set(SHELL_URL, tikwmData())
+    const res = await call(app, 'POST', '/api/sounds/sightings', { token: soundsToken }, { items: [{ videoUrl: `${SHELL_URL}?is_from_webapp=1&_r=1`, source: 'trend', region: 'sg', rank: 4 }] })
+    assert.equal(res.statusCode, 200)
+    assert.deepEqual(res.json().results[0], { videoUrl: `${SHELL_URL}?is_from_webapp=1&_r=1`, status: 'recorded', soundId: TIKWM_SOUND })
+    // tikwm was asked about the link without its query string.
+    assert.deepEqual(tikwmAsked(), [`https://www.tikwm.com/api/?url=${encodeURIComponent(SHELL_URL)}`])
+    const row = db.select().from(soundSightings).where(eq(soundSightings.soundId, TIKWM_SOUND)).get()!
+    assert.equal(row.videoUrl, 'https://www.tiktok.com/@moni.pte/video/7678256298554690836', 'the canonical URL from tikwm’s author and id')
+    assert.deepEqual(
+      [row.videoAuthor, row.plays, row.likes, row.saves, row.postedAt, row.source, row.region, row.rank],
+      ['moni.pte', 12345, 678, 321, '2024-11-13T00:00:00.000Z', 'trend', 'SG', 4],
+    )
+    const sound = db.select().from(sounds).where(eq(sounds.id, TIKWM_SOUND)).get()!
+    assert.deepEqual([sound.title, sound.author, sound.original], ['Tikwm Track', 'Tikwm Band', false])
+  })
+
+  it('tikwm with nothing (code ≠ 0, or no sound, or no video id): the page path’s reason stands', async () => {
+    tikwmAnswers.set(`${SHELL_PREFIX}.nosound/video/7678256298554690837`, tikwmData({ music_info: null }))
+    tikwmAnswers.set(`${SHELL_PREFIX}.noid/video/7678256298554690838`, tikwmData({ id: 'abc' }))
+    const res = await call(app, 'POST', '/api/sounds/sightings', { token: soundsToken }, {
+      items: [
+        { videoUrl: `${SHELL_PREFIX}.two/video/7678256298554690839`, source: 'viral' },
+        { videoUrl: `${SHELL_PREFIX}.nosound/video/7678256298554690837`, source: 'viral' },
+        { videoUrl: `${SHELL_PREFIX}.noid/video/7678256298554690838`, source: 'viral' },
+        { videoUrl: 'https://www.tiktok.com/@gone/video/2', source: 'viral' },
+        { videoUrl: 'https://www.tiktok.com/upstream-error', source: 'viral' },
+      ],
+    })
+    assert.deepEqual(
+      res.json().results.map((x: { status: string; reason?: string }) => [x.status, x.reason ?? null]),
+      [
+        ['unreadable', 'no_sound'],
+        ['unreadable', 'no_sound'],
+        ['unreadable', 'no_sound'],
+        ['unreadable', 'not_found'],
+        ['unreadable', 'unreachable'],
+      ],
+    )
+    assert.equal(tikwmAsked().length, 5, 'every failed page read asked tikwm once')
+    const paste = await call(app, 'POST', '/api/sounds/from-link', { cookie: await sessionFor(kol.id) }, { videoUrl: `${SHELL_PREFIX}.two/video/7678256298554690839` })
+    assert.equal(paste.statusCode, 422)
+    assert.equal(paste.json().reason, 'no_sound')
+  })
+
+  it('a page that reads fine never asks tikwm', async () => {
+    tikwmAnswers.set(TRACK_URL, tikwmData())
+    const res = await call(app, 'POST', '/api/sounds/sightings', { token: soundsToken }, { items: [{ videoUrl: TRACK_URL, source: 'viral' }, { videoUrl: SHORT_URL, source: 'viral' }] })
+    assert.deepEqual(res.json().results.map((x: { soundId: string }) => x.soundId), [TRACK_ID, ORIGINAL_ID])
+    assert.deepEqual(tikwmAsked(), [])
+  })
+
+  it('a pasted link read through tikwm gives the sound with its copy text', async () => {
+    const url = `${SHELL_PREFIX}.paste/video/7678256298554690840`
+    tikwmAnswers.set(url, tikwmData({ id: '7678256298554690840', music_info: { id: '7600000000000000302', title: 'original sound - Moni', author: 'Moni', original: true } }))
+    const res = await call(app, 'POST', '/api/sounds/from-link', { cookie: await sessionFor(kol.id) }, { videoUrl: url })
+    assert.equal(res.statusCode, 200)
+    assert.equal(res.json().status, 'recorded')
+    assert.equal(res.json().sound.copyText, 'original sound Moni')
+    const row = db.select().from(soundSightings).where(eq(soundSightings.soundId, '7600000000000000302')).get()!
+    assert.deepEqual([row.videoUrl, row.source], ['https://www.tiktok.com/@moni.pte/video/7678256298554690840', 'manual'])
+  })
+
+  it('one of our own posts read through tikwm is "known", nothing recorded', async () => {
+    const ownId = '7678256298554690850'
+    db.insert(publications)
+      .values({ id: randomUUID(), contentId: makeContent({ status: 'PUBLISHED' }), userId: kol.id, platform: 'tiktok', publishedUrl: `https://www.tiktok.com/@ours/video/${ownId}` })
+      .run()
+    const url = `${SHELL_PREFIX}.own/video/${ownId}`
+    tikwmAnswers.set(url, tikwmData({ id: ownId }))
+    const before = db.select().from(soundSightings).all().length
+    const res = await call(app, 'POST', '/api/sounds/sightings', { token: soundsToken }, { items: [{ videoUrl: url, source: 'viral' }] })
+    assert.deepEqual(res.json().results[0], { videoUrl: url, status: 'known', soundId: TIKWM_SOUND })
+    const asAdmin = await call(app, 'POST', '/api/sounds/sightings', { token: adminToken }, { items: [{ videoUrl: url, source: 'viral' }] })
+    assert.equal(asAdmin.json().results[0].reason, 'our_post')
+    assert.equal(db.select().from(soundSightings).all().length, before)
   })
 })

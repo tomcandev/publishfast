@@ -17,6 +17,7 @@ import {
   copyText,
   fetchTikTokPage,
   parseTikTokVideoPage,
+  parseTikwmVideo,
   soundUrl,
 } from '../lib/tiktok.js'
 
@@ -53,6 +54,64 @@ describe('the TikTok page parser', () => {
     assert.equal(parseTikTokVideoPage(page({ id: '../../etc', title: 'x' }))!.sound, null)
     assert.equal(parseTikTokVideoPage(page({ id: 7300000000000000201, title: 'x' }))!.sound, null)
     assert.equal(parseTikTokVideoPage(page({ id: '12', title: 'x'.repeat(500) }))!.sound!.title.length, 200)
+  })
+})
+
+describe('a tikwm answer read as a video (parseTikwmVideo)', () => {
+  const data = (over: Record<string, unknown> = {}) => ({
+    id: '7678256298554690836',
+    author: { unique_id: 'monipte' },
+    create_time: 1731456000,
+    play_count: 12345,
+    digg_count: 678,
+    comment_count: 9,
+    share_count: 10,
+    collect_count: 321,
+    music_info: { id: '7600000000000000301', title: 'Tikwm Track', author: 'Tikwm Band', original: false },
+    ...over,
+  })
+
+  it('maps tikwm’s fields onto the page parser’s shape', () => {
+    assert.deepEqual(parseTikwmVideo(data()), {
+      videoId: '7678256298554690836',
+      author: 'monipte',
+      sound: { id: '7600000000000000301', title: 'Tikwm Track', author: 'Tikwm Band', original: false },
+      plays: 12345,
+      likes: 678,
+      comments: 9,
+      shares: 10,
+      saves: 321,
+      postedAt: '2024-11-13T00:00:00.000Z',
+    })
+  })
+
+  it('not an object gives nothing', () => {
+    for (const bad of [null, undefined, 'x', 42, [data()]]) assert.equal(parseTikwmVideo(bad), null, JSON.stringify(bad))
+  })
+
+  it('a bad id or handle is null, the same checks as the page', () => {
+    for (const id of ['../1', '12a', 7678256298554690836, -1, '']) assert.equal(parseTikwmVideo(data({ id }))!.videoId, null, String(id))
+    assert.equal(parseTikwmVideo(data({ id: 123 }))!.videoId, '123', 'an exact JSON number is accepted')
+    for (const author of [{ unique_id: 'bad handle' }, { unique_id: '../x' }, { unique_id: 'a'.repeat(65) }, { unique_id: 5 }, 'monipte', null]) {
+      assert.equal(parseTikwmVideo(data({ author }))!.author, null, JSON.stringify(author))
+    }
+    assert.equal(parseTikwmVideo(data({ music_info: { id: '../etc', title: 'x' } }))!.sound, null)
+    assert.equal(parseTikwmVideo(data({ music_info: undefined }))!.sound, null)
+  })
+
+  it('bad counts are null; a count written as digits is read', () => {
+    const v = parseTikwmVideo(data({ play_count: -5, digg_count: 1.5, comment_count: 'many', share_count: Number.MAX_SAFE_INTEGER + 2, collect_count: '42' }))!
+    assert.deepEqual([v.plays, v.likes, v.comments, v.shares, v.saves], [null, null, null, null, 42])
+    const none = parseTikwmVideo(data({ play_count: undefined, collect_count: null }))!
+    assert.deepEqual([none.plays, none.saves], [null, null])
+  })
+
+  it('create_time (seconds) outside 2016 … tomorrow is no posting time', () => {
+    assert.equal(parseTikwmVideo(data({ create_time: 1_400_000_000 }))!.postedAt, null, '2014')
+    assert.equal(parseTikwmVideo(data({ create_time: Math.floor(Date.now() / 1000) + 3 * 86_400 }))!.postedAt, null, 'in 3 days')
+    assert.equal(parseTikwmVideo(data({ create_time: 1731456000000 }))!.postedAt, null, 'milliseconds, not seconds')
+    assert.equal(parseTikwmVideo(data({ create_time: '1731456000' }))!.postedAt, '2024-11-13T00:00:00.000Z')
+    assert.equal(parseTikwmVideo(data({ create_time: 'yesterday' }))!.postedAt, null)
   })
 })
 

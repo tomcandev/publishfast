@@ -16,9 +16,13 @@ import {
  * guarded fetch in lib/guardedFetch.ts with the TikTok host set: https only,
  * host exactly one of TIKTOK_HOSTS, no userinfo, port or IP literal, at most
  * 5 redirects each re-checked, 15 s, 3 MB, no upstream text to the caller.
+ * The public tikwm endpoint is asked about a link only after it passed that
+ * guard, without its query string, through the same guarded fetch with
+ * TIKWM_HOSTS.
  */
 
 export const TIKTOK_HOSTS: ReadonlySet<string> = new Set(['www.tiktok.com', 'tiktok.com', 'vt.tiktok.com', 'vm.tiktok.com', 'm.tiktok.com'])
+export const TIKWM_HOSTS: ReadonlySet<string> = new Set(['www.tikwm.com'])
 export { FETCH_MAX_BYTES, FETCH_TIMEOUT_MS, MAX_REDIRECTS }
 export type TikTokFetchFailure = FetchFailure
 export type TikTokPage = GuardedPage
@@ -97,6 +101,11 @@ export function soundOf(music: unknown): ParsedSound | null {
   }
 }
 
+/** A video author's handle (uniqueId), else null. */
+function handleOf(v: unknown) {
+  return typeof v === 'string' && /^[A-Za-z0-9._]{1,64}$/.test(v) ? v : null
+}
+
 /** How many `id="…"` matches are looked at before giving up (a hostile page could repeat it). */
 const MAX_SCRIPT_TRIES = 8
 
@@ -158,7 +167,7 @@ export function parseTikTokVideoPage(html: string): ParsedVideo | null {
   const statsV2 = obj(item.statsV2) ?? {}
   return {
     videoId: digits(item.id),
-    author: typeof handle === 'string' && /^[A-Za-z0-9._]{1,64}$/.test(handle) ? handle : null,
+    author: handleOf(handle),
     sound: soundOf(item.music),
     plays: countOf(stats.playCount, statsV2.playCount),
     likes: countOf(stats.diggCount, statsV2.diggCount),
@@ -166,6 +175,62 @@ export function parseTikTokVideoPage(html: string): ParsedVideo | null {
     shares: countOf(stats.shareCount, statsV2.shareCount),
     saves: countOf(stats.collectCount, statsV2.collectCount),
     postedAt: postedAtOf(item.createTime),
+  }
+}
+
+/* ---------- tikwm ---------- */
+
+/** The `data` of a tikwm answer (only the fields we read; every one is untrusted). */
+export type TikwmVideo = {
+  id?: unknown
+  author?: unknown
+  create_time?: unknown
+  play_count?: number
+  digg_count?: number
+  comment_count?: number
+  share_count?: number
+  collect_count?: number
+  music_info?: unknown
+}
+
+/**
+ * tikwm's answer for a guard-passed TikTok URL, query string removed; null
+ * when it has nothing (code ≠ 0, no data, a non-2xx answer, a failed read).
+ */
+export async function readTikwm(target: URL): Promise<TikwmVideo | null> {
+  const clean = allowedTikTokUrl(target.href)
+  if (!clean) return null
+  clean.search = ''
+  clean.hash = ''
+  try {
+    const page = await guardedFetch(`https://www.tikwm.com/api/?url=${encodeURIComponent(clean.href)}`, TIKWM_HOSTS, {
+      accept: 'application/json',
+    })
+    if (page.status < 200 || page.status >= 300) return null
+    const data = JSON.parse(page.body) as { code?: number; data?: TikwmVideo }
+    return data && data.code === 0 && data.data ? data.data : null
+  } catch {
+    return null
+  }
+}
+
+/**
+ * What a tikwm `data` object says about the video, in the page parser's
+ * shape and with the same checks. Null when it is not an object.
+ */
+export function parseTikwmVideo(data: unknown): ParsedVideo | null {
+  const d = obj(data)
+  if (!d) return null
+  return {
+    videoId: digits(d.id),
+    author: handleOf(obj(d.author)?.unique_id),
+    sound: soundOf(d.music_info),
+    plays: countOf(d.play_count),
+    likes: countOf(d.digg_count),
+    comments: countOf(d.comment_count),
+    shares: countOf(d.share_count),
+    saves: countOf(d.collect_count),
+    postedAt: postedAtOf(d.create_time),
   }
 }
 
