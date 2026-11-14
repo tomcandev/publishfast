@@ -10,7 +10,7 @@ import { eq } from 'drizzle-orm'
 import { buildApp } from '../app.js'
 import { db, sqlite } from '../db/index.js'
 import { migrate } from '../db/migrate.js'
-import { assets, contents } from '../db/schema.js'
+import { assets, contents, metricSnapshots, publications } from '../db/schema.js'
 import { createApiToken } from '../lib/auth.js'
 import { _resetBearerFailures } from '../lib/rateLimit.js'
 import { call, makeContent, makeUser, multipartFile, sessionFor } from './helpers.js'
@@ -209,5 +209,39 @@ describe('finding 3: a poster token never takes from the open queue', () => {
     const { createToken } = await import('../scripts/token.js')
     const human = makeUser('review-cli-open')
     assert.throws(() => createToken({ name: 'p-open', scope: 'poster', user: human.username }), /assigned-only/)
+  })
+})
+
+describe('finding 4: withdraw and delete never erase publications or metric history', () => {
+  it('withdraw, asset delete and item delete refuse with has_publications', async () => {
+    const yt = makeUser('review-yt', 'kol', { assignedOnly: true })
+    const maker = createApiToken('review-maker-pubs', 'kol', { scope: 'ingest', assignees: [yt.id] })
+    const created = await call(app, 'POST', '/api/ingest/contents', { token: maker }, { code: 'REVIEW-PUBS', assignedUserId: yt.id })
+    const id = created.json().content.id
+    await uploadPart(id, maker, 'v.mp4', 'video/mp4')
+    await call(app, 'PATCH', `/api/ingest/contents/${id}`, { token: maker }, { status: 'READY' })
+    // A person linked it, then released it: a normal state.
+    db.insert(publications)
+      .values({ id: `pub-${id}`, contentId: id, userId: yt.id, platform: 'youtube', publishedUrl: 'https://example.test/v' })
+      .run()
+    db.insert(metricSnapshots).values({ id: `snap-${id}`, publicationId: `pub-${id}`, takenAt: new Date().toISOString(), views: 5 }).run()
+
+    const w = await call(app, 'POST', `/api/ingest/contents/${id}/withdraw`, { token: maker })
+    assert.equal(w.statusCode, 409)
+    assert.equal(w.json().reason, 'has_publications')
+    assert.equal(db.select().from(contents).where(eq(contents.id, id)).get()!.status, 'READY')
+
+    // Even if an admin moved it back to DRAFT, the token cannot delete its files or the item.
+    db.update(contents).set({ status: 'DRAFT' }).where(eq(contents.id, id)).run()
+    const asset = db.select().from(assets).where(eq(assets.contentId, id)).get()!
+    const da = await call(app, 'DELETE', `/api/ingest/contents/${id}/assets/${asset.id}`, { token: maker })
+    assert.equal(da.statusCode, 409)
+    assert.equal(da.json().reason, 'has_publications')
+    const di = await call(app, 'DELETE', `/api/ingest/contents/${id}`, { token: maker })
+    assert.equal(di.statusCode, 409)
+    assert.equal(di.json().reason, 'has_publications')
+    assert.ok(db.select().from(publications).where(eq(publications.id, `pub-${id}`)).get())
+    assert.ok(db.select().from(metricSnapshots).where(eq(metricSnapshots.id, `snap-${id}`)).get())
+    assert.ok(db.select().from(assets).where(eq(assets.id, asset.id)).get())
   })
 })

@@ -7,7 +7,7 @@ import type { FastifyInstance, FastifyRequest } from 'fastify'
 import { and, asc, desc, eq, inArray, isNull, sql } from 'drizzle-orm'
 import { z } from 'zod'
 import { db } from '../db/index.js'
-import { CONTENT_TYPES, assets, contents, users, type Content } from '../db/schema.js'
+import { CONTENT_TYPES, assets, contents, publications, users, type Content } from '../db/schema.js'
 import { config } from '../lib/config.js'
 import { isActiveContent } from '../lib/download.js'
 import { META_MAX_BYTES, isoTime, jsonObject } from '../lib/fields.js'
@@ -69,6 +69,23 @@ function withAssets(rows: Content[]) {
       // Never expose on-disk paths to the client.
       .map(({ filePath: _hidden, ...rest }) => rest),
   }))
+}
+
+/**
+ * True inside a statement when the item has no publication. Withdraw and the
+ * deletes put it in their compare-and-swap, so a link recorded at any moment
+ * (and the metric history under it) can never be erased by a cascade.
+ */
+const hasNoPublications = (contentId: typeof contents.id | typeof assets.contentId) =>
+  sql`NOT EXISTS (SELECT 1 FROM ${publications} WHERE ${publications.contentId} = ${contentId})`
+
+function hasPublications(contentId: string) {
+  return !!db.select({ id: publications.id }).from(publications).where(eq(publications.contentId, contentId)).get()
+}
+
+const HAS_PUBLICATIONS = {
+  error: 'This item already has a published link; it cannot be withdrawn or deleted',
+  reason: 'has_publications',
 }
 
 const ASSIGNEE_REQUIRED = 'This token must assign every item to one of its assignees'
@@ -346,9 +363,14 @@ export async function ingestRoutes(app: FastifyInstance) {
     const result = db
       .update(contents)
       .set({ status: 'DRAFT', releaseAt: null })
-      .where(and(eq(contents.id, id), eq(contents.status, 'READY'), isNull(contents.claimedBy)))
+      .where(
+        and(eq(contents.id, id), eq(contents.status, 'READY'), isNull(contents.claimedBy), hasNoPublications(contents.id)),
+      )
       .run()
     const now = db.select().from(contents).where(eq(contents.id, id)).get()!
+    if (result.changes === 0 && now.status === 'READY' && hasPublications(id)) {
+      return reply.code(409).send({ ...HAS_PUBLICATIONS, status: now.status })
+    }
     if (result.changes === 0 && now.status !== 'DRAFT') {
       return reply.code(409).send({
         error: `This item is ${now.status} and can no longer be withdrawn`,
@@ -373,10 +395,21 @@ export async function ingestRoutes(app: FastifyInstance) {
       .where(and(eq(assets.id, assetId), eq(assets.contentId, id)))
       .get()
     if (!asset) return reply.code(404).send({ error: 'Not found' })
-    if (content.status !== 'DRAFT') {
+    // DRAFT and no publication, checked inside the DELETE.
+    const result = db
+      .delete(assets)
+      .where(
+        and(
+          eq(assets.id, asset.id),
+          sql`EXISTS (SELECT 1 FROM ${contents} WHERE ${contents.id} = ${assets.contentId} AND ${contents.status} = 'DRAFT')`,
+          hasNoPublications(assets.contentId),
+        ),
+      )
+      .run()
+    if (result.changes === 0) {
+      if (hasPublications(id)) return reply.code(409).send(HAS_PUBLICATIONS)
       return reply.code(409).send({ error: 'This item is no longer a draft and cannot be changed', reason: 'not_draft' })
     }
-    db.delete(assets).where(eq(assets.id, asset.id)).run()
     await unlinkUpload(asset.filePath)
     return { ok: true }
   })
@@ -393,9 +426,10 @@ export async function ingestRoutes(app: FastifyInstance) {
     // Only a DRAFT, checked inside the DELETE (asset rows go with it by cascade).
     const result = db
       .delete(contents)
-      .where(and(eq(contents.id, id), eq(contents.status, 'DRAFT')))
+      .where(and(eq(contents.id, id), eq(contents.status, 'DRAFT'), hasNoPublications(contents.id)))
       .run()
     if (result.changes === 0) {
+      if (hasPublications(id)) return reply.code(409).send({ ...HAS_PUBLICATIONS, status: content.status })
       return reply.code(409).send({ error: 'Only a draft can be deleted', reason: 'not_draft', status: content.status })
     }
     await Promise.all(assetRows.map((a) => unlinkUpload(a.filePath)))
