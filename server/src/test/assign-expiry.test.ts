@@ -172,3 +172,79 @@ describe('the scheduler expires assignments', () => {
     )
   })
 })
+
+describe('assigning without overwriting a claim: PATCH ifStatus / ifUnclaimed (review 2)', () => {
+  it('pinned: without those fields the PATCH behaves as before (it also writes on a claimed item)', async () => {
+    const id = makeContent({ status: 'CLAIMED', claimedBy: other.id })
+    const res = await call(app, 'PATCH', `/api/admin/contents/${id}`, { cookie: adminCookie }, { assignedUserId: carousel.id, title: 'plain' })
+    assert.equal(res.statusCode, 200)
+    assert.deepEqual([row(id).assignedUserId, row(id).title, row(id).status, row(id).claimedBy], [carousel.id, 'plain', 'CLAIMED', other.id])
+  })
+
+  it('applies only while the item still has that status and no claimer; otherwise 409 changed and nothing is written', async () => {
+    const ready = makeContent({ status: 'READY' })
+    const ok = await call(app, 'PATCH', `/api/admin/contents/${ready}`, { cookie: adminCookie }, { assignedUserId: carousel.id, assignExpiresAt: future(), ifStatus: 'READY', ifUnclaimed: true })
+    assert.equal(ok.statusCode, 200)
+    assert.equal(row(ready).assignedUserId, carousel.id)
+
+    const claimed = makeContent({ status: 'CLAIMED', claimedBy: other.id, title: 'before' })
+    const res = await call(app, 'PATCH', `/api/admin/contents/${claimed}`, { cookie: adminCookie }, { assignedUserId: carousel.id, title: 'after', ifStatus: 'READY', ifUnclaimed: true })
+    assert.equal(res.statusCode, 409)
+    assert.deepEqual([res.json().reason, res.json().status], ['changed', 'CLAIMED'])
+    assert.deepEqual([row(claimed).assignedUserId, row(claimed).title], [null, 'before'])
+
+    // ifUnclaimed alone: a READY row that still names a claimer is "changed" too.
+    const odd = makeContent({ status: 'READY', claimedBy: other.id })
+    const r2 = await call(app, 'PATCH', `/api/admin/contents/${odd}`, { cookie: adminCookie }, { assignedUserId: carousel.id, ifUnclaimed: true })
+    assert.equal(r2.statusCode, 409)
+    assert.equal(row(odd).assignedUserId, null)
+
+    for (const bad of [{ ifStatus: 'SOON' }, { ifUnclaimed: false }, { ifUnclaimed: 'yes' }]) {
+      assert.equal((await call(app, 'PATCH', `/api/admin/contents/${ready}`, { cookie: adminCookie }, { title: 'x', ...bad })).statusCode, 400, JSON.stringify(bad))
+    }
+    assert.equal((await call(app, 'PATCH', `/api/admin/contents/00000000-0000-4000-8000-000000000000`, { cookie: adminCookie }, { title: 'x', ifStatus: 'READY' })).statusCode, 404)
+  })
+
+  it('the race against a claim: exactly one of them wins, every time', async () => {
+    const person = makeUser('cas-person')
+    const cookie = await sessionFor(person.id)
+    let claims = 0
+    let assigns = 0
+    for (let i = 0; i < 40; i++) {
+      const id = makeContent({ status: 'READY' })
+      const doPatch = () =>
+        call(app, 'PATCH', `/api/admin/contents/${id}`, { cookie: adminCookie }, { assignedUserId: carousel.id, ifStatus: 'READY', ifUnclaimed: true }).then(
+          (r) => r.statusCode,
+        )
+      const doClaim = () => call(app, 'POST', `/api/contents/${id}/claim`, { cookie })
+      // In one process the race is about order: the assigner first, the claim first, or both in flight
+      // with the assigner's request started a little later. Each side is one compare-and-swap.
+      let claim: Awaited<ReturnType<typeof doClaim>>
+      let patched: number
+      if (i % 4 === 0) {
+        patched = await doPatch()
+        claim = await doClaim()
+      } else if (i % 4 === 1) {
+        claim = await doClaim()
+        patched = await doPatch()
+      } else {
+        ;[claim, patched] = await Promise.all([
+          doClaim(),
+          new Promise<number>((resolve) => (i % 4 === 2 ? setImmediate : (f: () => void) => setTimeout(f, 2))(() => void doPatch().then(resolve))),
+        ])
+      }
+      const r = row(id)
+      if (claim.statusCode === 200) {
+        claims++
+        assert.equal(patched, 409, 'the assigner did not overwrite the claim')
+        assert.deepEqual([r.status, r.claimedBy, r.assignedUserId], ['CLAIMED', person.id, null])
+      } else {
+        assigns++
+        assert.equal(patched, 200)
+        assert.deepEqual([r.status, r.claimedBy, r.assignedUserId], ['READY', null, carousel.id])
+      }
+    }
+    assert.equal(claims + assigns, 40)
+    assert.ok(claims > 0 && assigns > 0, `both orders were exercised (claims ${claims}, assigns ${assigns})`)
+  })
+})

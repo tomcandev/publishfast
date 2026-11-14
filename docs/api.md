@@ -294,7 +294,7 @@ curl -sS -X POST $BASE/api/ingest/contents/$ID/assets \
 | route | purpose |
 |---|---|
 | `GET/POST /api/admin/users` · `PATCH /api/admin/users/:id` | manage accounts (`PATCH` also takes `assignedOnly`) |
-| `GET /api/admin/contents` · `PATCH`/`DELETE /api/admin/contents/:id` | manage content (`PATCH` also takes `assignExpiresAt`: an ISO time or `null`; it needs an assignee, `400` otherwise; setting `assignedUserId` to `null` clears it) |
+| `GET /api/admin/contents` · `PATCH`/`DELETE /api/admin/contents/:id` | manage content (`PATCH` also takes `assignExpiresAt`: an ISO time or `null`; it needs an assignee, `400` otherwise; setting `assignedUserId` to `null` clears it. Optional `ifStatus` (a status) and `ifUnclaimed: true` make the write one compare-and-swap that applies only while the item still has that status and no claimer, else `409 {reason: "changed", status}` and nothing is written; without them the PATCH behaves as before. An assigner sends `ifStatus: "READY", ifUnclaimed: true` so it never overwrites a claim) |
 | `DELETE /api/admin/assets/:id` | remove a file |
 | `GET /api/admin/publications` | all recorded links |
 | `GET/POST /api/admin/tokens` · `DELETE /api/admin/tokens/:id` | API tokens (unscoped, as before; the list also shows `scope`, `expiresAt`, `revokedAt`) |

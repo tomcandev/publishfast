@@ -1,7 +1,7 @@
 import { unlink } from 'node:fs/promises'
 import { join } from 'node:path'
 import type { FastifyInstance } from 'fastify'
-import { and, asc, desc, eq, inArray, sql } from 'drizzle-orm'
+import { and, asc, desc, eq, inArray, isNull, sql } from 'drizzle-orm'
 import { z } from 'zod'
 import { db, sqlite } from '../db/index.js'
 import { ROLES, apiTokens, assets, contents, publications, pushSubscriptions, reminderSettings, users } from '../db/schema.js'
@@ -159,6 +159,10 @@ export async function adminRoutes(app: FastifyInstance) {
         assignedUserId: z.string().nullable().optional(),
         /** The assignment ends at this time (READY, unclaimed items go back to the open queue). */
         assignExpiresAt: isoTime.nullable().optional(),
+        /** Compare-and-swap: write only while the item still has this status… */
+        ifStatus: z.enum(['DRAFT', 'READY', 'CLAIMED', 'PUBLISHED', 'FAILED']).optional(),
+        /** …and (with true) nobody has claimed it. Otherwise 409 `changed` and nothing is written. */
+        ifUnclaimed: z.literal(true).optional(),
       })
       .safeParse(req.body)
     if (!body.success) return reply.code(400).send({ error: body.error.issues[0]?.message ?? 'Invalid input' })
@@ -189,14 +193,28 @@ export async function adminRoutes(app: FastifyInstance) {
     const reopens = body.data.status === 'READY' || body.data.status === 'CLAIMED'
 
     try {
+      const { ifStatus, ifUnclaimed } = body.data
       const result = db
         .update(contents)
         .set(patch)
-        .where(reopens ? and(eq(contents.id, id), sql`NOT ${prunedOnly}`) : eq(contents.id, id))
+        .where(
+          and(
+            eq(contents.id, id),
+            reopens ? sql`NOT ${prunedOnly}` : undefined,
+            // The assigner's guard: one statement, so a claim that lands first wins.
+            ifStatus ? eq(contents.status, ifStatus) : undefined,
+            ifUnclaimed ? isNull(contents.claimedBy) : undefined,
+          ),
+        )
         .run()
       if (result.changes === 0) {
+        const now = db.select({ status: contents.status, claimedBy: contents.claimedBy }).from(contents).where(eq(contents.id, id)).get()
+        if (!now) return reply.code(404).send({ error: 'Not found' })
+        if ((ifStatus && now.status !== ifStatus) || (ifUnclaimed && now.claimedBy)) {
+          return reply.code(409).send({ error: 'The item changed; nothing was written', reason: 'changed', status: now.status })
+        }
         if (reopens && isPrunedOnly(id)) return reply.code(409).send(MEDIA_PRUNED)
-        return reply.code(404).send({ error: 'Not found' })
+        return reply.code(409).send({ error: 'The item changed; nothing was written', reason: 'changed', status: now.status })
       }
       const updated = db.select().from(contents).where(eq(contents.id, id)).get()!
       const assetRows = db
