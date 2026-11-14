@@ -10,11 +10,13 @@ import { holdConflict, holdReply } from '../lib/holds.js'
 const upsertSchema = z.object({
   contentId: z.string().min(1),
   platform: z.enum(PLATFORMS),
-  // http(s) only: a javascript: or data: link would run when someone clicks it.
+  // A signed-in person keeps the old rule (any URL, e.g. an app link such as
+  // snssdk1233://…), except schemes that run or read something when clicked.
+  // Tokens are held to http(s) in the route.
   publishedUrl: z
     .string()
     .url('Invalid URL')
-    .refine((u) => /^https?:\/\//i.test(u), 'The link must start with http:// or https://'),
+    .refine((u) => !/^\s*(javascript|data|vbscript|file):/i.test(u), 'This kind of link is not allowed'),
   /** The public time (e.g. a scheduled video's). A `Z` time is stored as sent; an offset is converted to UTC. */
   publishedAt: z
     .string()
@@ -38,6 +40,9 @@ export async function publicationRoutes(app: FastifyInstance) {
     }
     const { contentId, platform, publishedUrl, publishedAt } = parsed.data
     const user = req.user!
+    if (req.apiToken && !/^https?:\/\//i.test(publishedUrl)) {
+      return reply.code(400).send({ error: 'The link must start with http:// or https://' })
+    }
 
     // A KOL may only log links against an item they currently hold.
     const owned = db

@@ -305,6 +305,16 @@ describe('cookie sessions', () => {
     assert.equal((await call(app, 'POST', '/api/ingest/contents', { cookie: kolCookie }, { code: 'K' })).statusCode, 401)
   })
 
+  it('a person may save an app link (non-http scheme), as before', async () => {
+    const id = makeContent({ status: 'CLAIMED', claimedBy: kol.id })
+    const res = await call(app, 'POST', '/api/publications', { cookie: kolCookie }, {
+      contentId: id,
+      platform: 'tiktok',
+      publishedUrl: 'snssdk1233://aweme/detail/7300000000000000000',
+    })
+    assert.equal(res.statusCode, 200)
+  })
+
   it('a kol never sees another kol’s claim or another kol’s assigned item (404)', async () => {
     const other = makeUser('other')
     const theirs = makeContent({ status: 'CLAIMED', claimedBy: other.id })
