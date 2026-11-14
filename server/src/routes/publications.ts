@@ -7,16 +7,26 @@ import { PLATFORMS, contents, publications } from '../db/schema.js'
 import { requireUser } from '../lib/guards.js'
 import { holdConflict, holdReply } from '../lib/holds.js'
 
+const BLOCKED_SCHEMES = new Set(['javascript:', 'data:', 'vbscript:', 'file:'])
+
 const upsertSchema = z.object({
   contentId: z.string().min(1),
   platform: z.enum(PLATFORMS),
-  // A signed-in person keeps the old rule (any URL, e.g. an app link such as
-  // snssdk1233://…), except schemes that run or read something when clicked.
+  // A signed-in person keeps the old rule (any absolute URL, e.g. an app link
+  // such as snssdk1233://…), except schemes that run or read something when
+  // clicked. The scheme is the one the URL parser (as a browser) reports, so
+  // tabs, newlines and leading control characters cannot hide it.
   // Tokens are held to http(s) in the route.
   publishedUrl: z
     .string()
     .url('Invalid URL')
-    .refine((u) => !/^\s*(javascript|data|vbscript|file):/i.test(u), 'This kind of link is not allowed'),
+    .refine((u) => {
+      try {
+        return !BLOCKED_SCHEMES.has(new URL(u).protocol.toLowerCase())
+      } catch {
+        return false
+      }
+    }, 'This kind of link is not allowed'),
   /** The public time (e.g. a scheduled video's). A `Z` time is stored as sent; an offset is converted to UTC. */
   publishedAt: z
     .string()
