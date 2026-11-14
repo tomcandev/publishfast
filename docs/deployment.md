@@ -143,18 +143,28 @@ and deletes expired drop-box files. It never touches drafts without
 
 ## Tokens
 
+Create **no scoped token until the upgrade's smoke check has passed** (the old
+pipeline token ingests, a person can open and claim from the queue).
+
 Scoped tokens are made on the server with the CLI (see `docs/api.md`). Use the
 compiled entry so no dev tooling is needed, and send stdout straight to where
-the token belongs; it is printed nowhere else:
+the token belongs; it is printed nowhere else. Set `umask 077` first so the
+token files are readable by you alone.
+
+A poster account must be assigned-only before it gets a token (the CLI refuses
+otherwise), so an agent can never take from the people's open queue:
 
 ```bash
 cd ~/projects/publishfast
+umask 077
+node server/dist/scripts/token.js user set --username yt-pte --assigned-only true
+node server/dist/scripts/token.js user set --username yt-vichat --assigned-only true
 node server/dist/scripts/token.js create --name maker-nhi --scope ingest \
     --assignees yt-pte,yt-vichat --file-prefix nhi/ > ~/maker-nhi.token
 node server/dist/scripts/token.js create --name air-pte --scope poster --user yt-pte > ~/air-pte.token
+node server/dist/scripts/token.js create --name air-vichat --scope poster --user yt-vichat > ~/air-vichat.token
 node server/dist/scripts/token.js create --name weekly-read --scope read --expires 90 > ~/weekly.token
 node server/dist/scripts/token.js create --name vps-voice --scope files --file-prefix nhi/ > ~/vps-voice.token
-node server/dist/scripts/token.js user set --username yt-pte --assigned-only true
 node server/dist/scripts/token.js list
 node server/dist/scripts/token.js list --events air-pte
 node server/dist/scripts/token.js rotate --name air-pte > ~/air-pte.token

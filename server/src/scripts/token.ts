@@ -104,6 +104,12 @@ export function createToken(opts: {
     const user = findUser(opts.user)
     if (!user.active) throw new CliError(`User "${user.username}" is inactive`)
     if (user.role !== 'kol') throw new CliError('A poster token must act as a kol user, not an admin')
+    if (!user.assignedOnly) {
+      throw new CliError(
+        `User "${user.username}" is not assigned-only, so an agent could take from the open queue. ` +
+          `First run: token user set --username ${user.username} --assigned-only true`,
+      )
+    }
     userId = user.id
   }
 

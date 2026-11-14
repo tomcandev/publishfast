@@ -28,7 +28,9 @@ Authorization: Bearer pf_xxxxxxxxxxxxxxxx
   route is closed to them until someone adds it there on purpose.
 - An `ingest` token with assignees must give every item it creates or patches an `assignedUserId` from
   that list (`400` otherwise). With no assignees it may create unassigned items.
-- A `poster` token acts as its user with kol power, even if that user is an admin.
+- A `poster` token acts as its user with kol power, and only ever sees and claims items **assigned to
+  that user**, never the open queue, whatever the account's `assignedOnly` says. The CLI only makes
+  poster tokens for kol users that are `assignedOnly`.
 - Expired and revoked tokens, and poster tokens whose user is inactive, get the same `401` as an unknown
   token.
 - 20 failed bearer attempts from one IP within 5 minutes block bearer requests from that IP with `429`
@@ -302,7 +304,7 @@ node server/dist/scripts/token.js <command> …
 - `create` and `rotate` print **only the token and a newline** on stdout; what was made goes to stderr,
   so `… create … > token.txt` stores the token without showing it. Use `npm run -s` (or the `node`
   form): without `-s`, npm itself prints a two-line banner on stdout.
-- `--user` (a kol user) is required for `poster`; `--assignees` is only for `ingest`; `--file-prefix` is
+- `--user` (an assigned-only kol user) is required for `poster`; `--assignees` is only for `ingest`; `--file-prefix` is
   required for `files` and optional for `ingest`. A duplicate active name is refused.
 - `list` shows name, scope, user, assignees, file prefix, created, last used, expires, revoked — never a
   token or a hash. `--events <name>` shows that token's last 50 state-changing calls.

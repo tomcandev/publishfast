@@ -392,9 +392,12 @@ describe('poster scope', () => {
     assert.equal((await call(app, 'GET', `/api/contents/${open}`, { cookie })).statusCode, 404)
     assert.equal((await call(app, 'GET', '/api/contents/stats', { cookie })).json().available, 0)
 
-    // A normal user still sees and takes the open queue.
-    const bobs = (await call(app, 'GET', '/api/contents', { token: bobToken })).json().contents
+    // A normal user signed in still sees the open queue; their poster token does not (review finding 3).
+    const bobCookie = await sessionFor(bob.id)
+    const bobs = (await call(app, 'GET', '/api/contents', { cookie: bobCookie })).json().contents
     assert.ok(bobs.some((c: { id: string }) => c.id === open))
+    const bobsToken = (await call(app, 'GET', '/api/contents', { token: bobToken })).json().contents
+    assert.ok(!bobsToken.some((c: { id: string }) => c.id === open))
     db.update(contents).set({ status: 'FAILED' }).where(eq(contents.id, open)).run()
   })
 
@@ -447,12 +450,14 @@ describe('poster scope', () => {
     assert.equal((await call(app, 'GET', '/api/admin/users', { token })).statusCode, 403)
   })
 
-  it('many posters racing for one item: exactly one wins, the rest get 409', async () => {
-    const item = makeContent({ status: 'READY' })
-    const racers = Array.from({ length: 20 }, (_, i) => {
-      const u = makeUser(`racer${i}`)
-      return { u, token: createApiToken(`racer${i}`, 'kol', { scope: 'poster', userId: u.id }) }
-    })
+  it('many poster tokens racing for one item: exactly one wins, the rest get 409', async () => {
+    // Poster tokens only take items assigned to their user, so the racers are 20 tokens of one user.
+    const u = makeUser('racer', 'kol', { assignedOnly: true })
+    const item = makeContent({ status: 'READY', assignedUserId: u.id })
+    const racers = Array.from({ length: 20 }, (_, i) => ({
+      u,
+      token: createApiToken(`racer${i}`, 'kol', { scope: 'poster', userId: u.id }),
+    }))
     const results = await Promise.all(
       racers.map((r) => call(app, 'POST', `/api/contents/${item}/claim`, { token: r.token })),
     )
@@ -460,8 +465,8 @@ describe('poster scope', () => {
     assert.equal(winners.length, 1, 'exactly one poster must win')
     assert.ok(results.filter((r) => r.statusCode !== 200).every((r) => r.statusCode === 409))
     const row = db.select().from(contents).where(eq(contents.id, item)).get()!
-    assert.equal(row.claimedBy, winners[0]!.json().content.claimedBy)
-    assert.ok(racers.some((r) => r.u.id === row.claimedBy))
+    assert.equal(row.claimedBy, u.id)
+    assert.equal(winners[0]!.json().content.claimedByThisToken, true)
   })
 
   it('records claim, publication and complete events with their ids', async () => {

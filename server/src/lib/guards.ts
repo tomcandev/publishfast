@@ -84,8 +84,10 @@ export async function attachIdentity(req: FastifyRequest, reply: FastifyReply) {
         return reply
       }
       if (row.scope === 'poster') {
-        // Acts as its user, never with admin power even if that user is an admin.
-        req.user = { ...actingUser!, role: 'kol' }
+        // Acts as its user, never with admin power even if that user is an admin,
+        // and never on the open queue: only items assigned to that user, whatever
+        // the account's own assigned_only says (the person keeps their open queue).
+        req.user = { ...actingUser!, role: 'kol', assignedOnly: true }
       }
       return
     }

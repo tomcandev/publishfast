@@ -42,7 +42,7 @@ let ytVichat: ReturnType<typeof makeUser>
 before(async () => {
   migrate()
   app = await buildApp({ logger: false })
-  poster = makeUser('poster')
+  poster = makeUser('poster', 'kol', { assignedOnly: true })
   ytPte = makeUser('yt-pte')
   ytVichat = makeUser('yt-vichat')
 })

@@ -184,3 +184,30 @@ describe('finding 2: the bearer rate limit never refuses a valid token', () => {
     assert.equal(res.statusCode, 429)
   })
 })
+
+describe('finding 3: a poster token never takes from the open queue', () => {
+  it('even when its user is not assigned_only: list, get, claim and claim-next see only assigned items', async () => {
+    db.update(contents).set({ status: 'FAILED' }).where(eq(contents.status, 'READY')).run()
+    const human = makeUser('review-open-user') // assigned_only = false
+    const token = createApiToken('review-poster-open', 'kol', { scope: 'poster', userId: human.id })
+    const open = makeContent({ status: 'READY' })
+    const mine = makeContent({ status: 'READY', assignedUserId: human.id })
+
+    const list = (await call(app, 'GET', '/api/contents', { token })).json().contents.map((c: { id: string }) => c.id)
+    assert.deepEqual(list, [mine])
+    assert.equal((await call(app, 'GET', `/api/contents/${open}`, { token })).statusCode, 404)
+    assert.equal((await call(app, 'POST', `/api/contents/${open}/claim`, { token })).statusCode, 404)
+    assert.equal((await call(app, 'POST', '/api/contents/claim-next', { token })).json().content.id, mine)
+    assert.equal((await call(app, 'POST', '/api/contents/claim-next', { token })).statusCode, 404)
+    assert.equal(db.select().from(contents).where(eq(contents.id, open)).get()!.status, 'READY')
+    // The person signed in as that user still sees the open queue.
+    const cookie = await sessionFor(human.id)
+    assert.equal((await call(app, 'GET', `/api/contents/${open}`, { cookie })).statusCode, 200)
+  })
+
+  it('the CLI refuses a poster token for a user that is not assigned_only', async () => {
+    const { createToken } = await import('../scripts/token.js')
+    const human = makeUser('review-cli-open')
+    assert.throws(() => createToken({ name: 'p-open', scope: 'poster', user: human.username }), /assigned-only/)
+  })
+})
