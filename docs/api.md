@@ -117,7 +117,9 @@ Items this KOL has completed.
 ```
 
 Platforms: `tiktok`, `instagram`, `youtube_shorts`, `youtube` (long videos), `facebook`, `other`.
-`publishedUrl` must be an `http://` or `https://` link.
+`publishedUrl`: a token must send an `http://` or `https://` link. A signed-in person may also save
+other links (e.g. an app link `snssdk1233://…`), as before, except `javascript:`, `data:`, `vbscript:`
+and `file:`.
 Optional `publishedAt` (ISO 8601; an offset is converted to UTC) — e.g. a scheduled video's public time.
 
 Submitting the same `(contentId, platform)` again updates the existing row.
@@ -213,19 +215,21 @@ Ingest-scope tokens on their own `DRAFT` item, and admin tokens (old ones includ
 | route | what |
 |---|---|
 | `POST /api/ingest/contents/:id/uploads` | JSON `{name, size, mime?, sha256?}` → `201 {uploadId, partSize, parts}`. `partSize` is `UPLOAD_PART_BYTES` (32 MB); `parts` = ceil(size / partSize). The declared size is checked against the per-file cap (`413`), the token's total (`413`) and the free-space floor (`507`) before any byte. `name`: 1–255 chars, no `/ \` or control characters; svg/html/xml refused for scoped tokens |
-| `PUT …/uploads/:uploadId/parts/:n` | raw body (`Content-Type: application/octet-stream`), `n` from 1, at most `partSize` bytes (`413`; the last part may be shorter) → `{part, size}`. Sending a part again replaces it; any order |
+| `PUT …/uploads/:uploadId/parts/:n` | raw body (`Content-Type: application/octet-stream`), `n` from 1 to `parts` (`400` beyond). Part `n` is at most its expected length: `partSize`, and `size - (parts-1) × partSize` for the last (`413`, checked on `Content-Length` and on the bytes received) → `{part, size}`. Sending a part again replaces it; any order. `409` while the upload is being completed |
 | `GET …/uploads/:uploadId` | `{uploadId, name, size, partSize, parts, received: [n…], completed}` — to resume |
-| `POST …/uploads/:uploadId/complete` | every part there and sizes add up, else `409 {missing, receivedBytes}`; joins them in order while hashing; a declared `sha256` that does not match → `422` and nothing is kept; creates the asset exactly as the multipart route (type and mime rules, sort order) → `201 {asset}`. Completing again answers the same asset |
-| `DELETE …/uploads/:uploadId` | abort: deletes the parts |
+| `GET /api/ingest/contents/:id/uploads` | the item's unfinished uploads `{uploads: [{uploadId, name, size, partSize, received}]}`, for a client that lost the id. The same list is in `GET /api/ingest/contents/:id` and `?code=` answers as `uploads` |
+| `POST …/uploads/:uploadId/complete` | marks the upload as completing (one request at a time; a second gets `409 reason: completing`; a mark older than 10 minutes counts as a crashed join). Every part there and sizes add up, else `409 {missing, receivedBytes}`; the bytes joined must equal `size`; joins them in order while hashing; a declared `sha256` that does not match → `422` and nothing is kept; creates the asset exactly as the multipart route (type and mime rules, sort order) → `201 {asset}`. Completing again answers the same asset |
+| `DELETE …/uploads/:uploadId` | abort: deletes the parts. `409` while it is being completed |
 
 Parts live under server-made names (`DATA_DIR/upload-parts/<uploadId>/<n>.part`); nothing the client
 sends becomes a path. Unfinished uploads count toward the token's total, are deleted when the item
 leaves `DRAFT` or is deleted, and are swept (rows and bytes) after 24 hours. Another token's upload or
 item answers `404`; a non-draft `409`.
 
-**Disk limits.** Every upload answers `507` when it would leave less than `MIN_FREE_BYTES` free. An
-ingest-scope token may hold at most `MAX_INGEST_BYTES` of media in its `DRAFT` and `READY` items
-(`413` beyond). A failed, oversize or aborted upload leaves no bytes and no rows behind.
+**Disk limits.** Every upload answers `507` when it would leave less than `MIN_FREE_BYTES` free, counting
+the uploads in flight in the server. An ingest-scope token may hold at most `MAX_INGEST_BYTES` of media in
+its `DRAFT` and `READY` items, counting open uploads in parts and its other requests in flight (`413`
+beyond; a multipart request counts its whole body). A failed, oversize or aborted upload leaves no bytes and no rows behind.
 
 Asset `type`: a declared `video/*` is `video` and `image/*` is `image`. Otherwise the file name decides:
 image extensions (`.jpg .jpeg .png .webp .gif .heic .heif`) are `image` and video extensions

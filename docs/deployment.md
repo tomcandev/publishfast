@@ -119,6 +119,16 @@ deploy.
 
 ### Upgrading to scoped tokens (agent API)
 
+**Before upgrading**, check:
+
+1. Free disk space is well above `MIN_FREE_BYTES` (default 2 GB): `df -h ~/projects/publishfast/data`.
+   Below it, every upload answers `507`.
+2. The existing uploader (pteflow pipeline) sends no body keys named `releaseAt`, `publishAt`, `meta`
+   or `source` with another meaning: they are now read and validated.
+3. `sqlite3 data/publishfast.db "select mime, count(*) from assets group by 1"` — any type outside
+   png, jpeg, webp, gif, mp4, quicktime and webm will now download instead of opening inline.
+4. After the restart, open one image post and one video post on an iPhone.
+
 The schema change is additive (new nullable or defaulted columns, new tables
 `metric_snapshots`, `token_events`, `files`); existing tokens and sessions keep
 working unchanged. Back up first, then run the migration explicitly so you see
@@ -187,6 +197,7 @@ machine over a secure channel and delete it here.
 | `MAX_UPLOAD_BYTES` | `536870912` (512 MB) | per file |
 | `MAX_FILE_BYTES` | `94371840` (90 MB) | per drop-box file (`PUT /api/files/<key>`); keep under Cloudflare's 100 MB request limit |
 | `UPLOAD_PART_BYTES` | `33554432` (32 MB) | part size for uploads in parts |
+| `REQUEST_TIMEOUT_MS` | `1800000` (30 min) | longest one request may take, body included; keep above the slowest real upload |
 | `MAX_FILES_PREFIX_BYTES` | `2147483648` (2 GB) | drop box: total under one token prefix; admin tokens exempt |
 | `MAX_INGEST_BYTES` | `5368709120` (5 GB) | total DRAFT+READY media one ingest-scope token may hold; admin tokens exempt |
 | `MIN_FREE_BYTES` | `2147483648` (2 GB) | uploads (all callers) answer `507` when they would leave less free disk |
