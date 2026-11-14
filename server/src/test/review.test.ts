@@ -152,3 +152,35 @@ describe('small: names with control or non-Latin-1 characters', () => {
 })
 
 void contents
+
+describe('finding 2: the bearer rate limit never refuses a valid token', () => {
+  it('after 20 bad attempts a valid token from the same address still works; bad ones get 429', async () => {
+    const pipeline = createApiToken('review-pipeline')
+    const ip = '198.51.100.7'
+    for (let i = 0; i < 20; i++) {
+      const res = await call(app, 'GET', '/api/admin/users', { token: `pf_bad${i}`, ip })
+      assert.equal(res.statusCode, 401)
+    }
+    assert.equal((await call(app, 'GET', '/api/admin/users', { token: 'pf_bad', ip })).statusCode, 429)
+    assert.equal((await call(app, 'GET', '/api/admin/users', { token: pipeline, ip })).statusCode, 200)
+  })
+
+  it('X-Forwarded-For does not move the caller to a fresh bucket', async () => {
+    const ip = '198.51.100.8'
+    for (let i = 0; i < 20; i++) {
+      await app.inject({
+        method: 'GET',
+        url: '/api/admin/users',
+        headers: { authorization: 'Bearer pf_bad', 'x-forwarded-for': `10.0.${i}.1` },
+        remoteAddress: ip,
+      })
+    }
+    const res = await app.inject({
+      method: 'GET',
+      url: '/api/admin/users',
+      headers: { authorization: 'Bearer pf_bad', 'x-forwarded-for': '10.9.9.9' },
+      remoteAddress: ip,
+    })
+    assert.equal(res.statusCode, 429)
+  })
+})

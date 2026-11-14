@@ -165,14 +165,14 @@ describe('expired and revoked tokens', () => {
 })
 
 describe('failed bearer attempts are rate-limited per IP', () => {
-  it(`after ${MAX_FAILURES} failures the IP gets 429, even with a good token; other IPs are unaffected`, async () => {
+  it(`after ${MAX_FAILURES} failures the IP's bad attempts get 429, a good token still works; other IPs are unaffected`, async () => {
     const good = createApiToken('rl-good')
     const bad = { token: 'pf_guess', ip: '203.0.113.9' }
     for (let i = 0; i < MAX_FAILURES; i++) {
       assert.equal((await call(app, 'GET', '/api/admin/users', bad)).statusCode, 401)
     }
     assert.equal((await call(app, 'GET', '/api/admin/users', bad)).statusCode, 429)
-    assert.equal((await call(app, 'GET', '/api/admin/users', { token: good, ip: '203.0.113.9' })).statusCode, 429)
+    assert.equal((await call(app, 'GET', '/api/admin/users', { token: good, ip: '203.0.113.9' })).statusCode, 200)
     assert.equal((await call(app, 'GET', '/api/admin/users', { token: good, ip: '203.0.113.10' })).statusCode, 200)
     // A request without a bearer header (a person with a cookie) is not blocked.
     const admin = makeUser('rl-admin', 'admin')

@@ -30,14 +30,15 @@ declare module 'fastify' {
 }
 
 /**
- * The client address for rate limiting. Behind the Cloudflare Tunnel the
- * leftmost X-Forwarded-For entry (what req.ip resolves to with trustProxy) is
- * whatever the client sent; CF-Connecting-IP is set by Cloudflare itself.
+ * The client address for rate limiting and the audit trail. CF-Connecting-IP
+ * is set by Cloudflare itself; without it, the socket address. Never
+ * X-Forwarded-For (what req.ip resolves to with trustProxy), which the
+ * client can write.
  */
 export function clientIp(req: FastifyRequest) {
   const cf = req.headers['cf-connecting-ip']
   if (typeof cf === 'string' && cf.length > 0 && cf.length <= 64) return cf
-  return req.ip
+  return req.raw.socket?.remoteAddress ?? 'unknown'
 }
 
 /**
@@ -52,12 +53,8 @@ export function clientIp(req: FastifyRequest) {
 export async function attachIdentity(req: FastifyRequest, reply: FastifyReply) {
   const auth = req.headers.authorization
   if (auth?.startsWith('Bearer ')) {
-    const ip = clientIp(req)
-    if (isBearerBlocked(ip)) {
-      reply.code(429).send({ error: 'Too many failed token attempts. Try again later.' })
-      return reply
-    }
-
+    // The token is resolved first: a valid token is never refused by the limiter,
+    // which only counts and refuses failed attempts.
     const row = resolveApiToken(auth.slice(7).trim())
     // A poster token is only as alive as its user.
     const actingUser = row?.scope === 'poster' && row.userId ? findUserById(row.userId) : undefined
@@ -93,8 +90,13 @@ export async function attachIdentity(req: FastifyRequest, reply: FastifyReply) {
       return
     }
 
+    const ip = clientIp(req)
+    if (isBearerBlocked(ip)) {
+      reply.code(429).send({ error: 'Too many failed token attempts. Try again later.' })
+      return reply
+    }
     if (recordBearerFailure(ip)) {
-      req.log.warn({ ip }, 'too many failed bearer attempts; blocking this address for 5 minutes')
+      req.log.warn({ ip }, 'too many failed bearer attempts; blocking failed attempts from this address for 5 minutes')
     }
   }
 
