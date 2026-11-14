@@ -176,13 +176,29 @@ that post for Tom. Machines use scoped bearer tokens, made with the token CLI (`
 the web page:
 * `ingest` — creates and fills its own drafts (optionally only for listed assignees), reads drop-box files under its prefix.
 * `poster` — acts as exactly one kol user on the queue routes; claims it makes belong to the token.
-* `read` — analysis exports only. `files` — the temporary drop box under its key prefix. `admin` — everything, like an old token.
+* `read` — analysis exports (and the sound ranking) only. `files` — the temporary drop box under its key prefix. `admin` — everything, like an old token.
+* `sounds` — reports TikTok video links seen using a sound (the server reads each page itself) and reads the ranking.
 * Old tokens (no scope) keep their exact behaviour.
 
 **Allow-list rule:** every route a narrow scope may call is listed in `server/src/lib/scopes.ts`, the
 only place that decides it; the auth hook refuses anything else with 403. A new route is closed to
-`ingest`, `poster`, `read` and `files` tokens until you add it there deliberately, and
+`ingest`, `poster`, `read`, `files` and `sounds` tokens until you add it there deliberately, and
 `server/src/test/scopes.test.ts` checks every registered route against that list.
+
+**Server-side fetch rule:** the server must never fetch a URL that came from a caller (a token, a
+person's paste, a saved post link) with a plain `fetch(url)`. Go through a guard like
+`fetchTikTokPage` in `server/src/lib/tiktok.ts`: parse with the URL parser and fetch the parsed href,
+https only, an exact host allow-list, no userinfo, port or IP literal, redirects followed by hand
+(`redirect: 'manual'`, each hop re-checked, a small maximum), one timeout, a body cap, and never the
+fetched body or upstream error text back to the caller. Tests stub `globalThis.fetch`; no test may
+reach the network. (The public-count sync's old YouTube/other-link path in `lib/metrics.ts` predates
+this rule and is kept exactly as it was; do not copy it.)
+
+**Deleting people's files:** media of done posts is removed only by `server/src/lib/prune.ts`, which
+is off unless `PRUNE_PUBLISHED_AFTER_DAYS` is set, touches only `PUBLISHED` items, uses one selection
+function for the dry run and the real run, and marks each asset row (compare-and-swap `pruned_at`)
+before it removes the file. Any new code that deletes files keeps those properties: off by default,
+a trustworthy dry run, mark first, delete second.
 
 ## Engineering Rules for AI Collaborators
 

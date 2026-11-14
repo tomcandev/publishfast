@@ -1,6 +1,6 @@
 # Data model
 
-Twelve tables in one SQLite file. The schema is applied as idempotent DDL at
+Fourteen tables in one SQLite file. The schema is applied as idempotent DDL at
 startup ([`server/src/db/migrate.ts`](../server/src/db/migrate.ts)) — there is no
 migration CLI to install or codegen step to run.
 
@@ -11,6 +11,7 @@ users ──< contents ──< assets
               publications ──< metric_snapshots
 api_tokens (machine access) ──< token_events (audit; no FK, outlives the token)
 files (drop box; standalone)
+sounds ──< sound_sightings        publications.sound_id ─ ─ sounds.id (no FK)
 ```
 
 Columns added after a table first shipped are listed in `addedColumns` in `migrate.ts` and added
@@ -63,6 +64,13 @@ Media attached to a content item, ordered by `sort_order`. `type` is `video`, `i
 relative to the uploads directory and is **never** sent to the client — media is
 served through `/api/assets/:id`, which re-checks permissions on every request.
 
+`pruned_at` (nullable) is set by the media prune (`lib/prune.ts`, off unless
+`PRUNE_PUBLISHED_AFTER_DAYS` is set) when it deleted the file of a `PUBLISHED` item a few days after its
+newest publication. The row, its `size` and the item's publications and snapshots stay; downloads and
+the zip answer `410 {reason: "pruned", prunedAt}`; the web pages say "Media removed <date>". The row is
+marked (compare-and-swap) before the file is removed, so a row without `pruned_at` whose file was
+deleted by the prune cannot exist.
+
 ## publications
 
 One row per platform a content item was posted to. A unique index on
@@ -71,6 +79,10 @@ updates the existing row rather than creating a duplicate.
 
 This is what supports the core requirement: one KOL takes one content item and
 posts it to several platforms, pasting a separate link back for each.
+
+`sound_id`, `sound_title`, `sound_author`, `sound_original` (all nullable): the TikTok sound of the
+post, filled by the public-count sync from the video page it reads (a page without a sound leaves them
+as they were).
 
 ## metric_snapshots
 
@@ -87,7 +99,7 @@ and is not recoverable.
 | column | notes |
 |---|---|
 | `role` | `admin` or `kol`; decides what an old (unscoped) token may do |
-| `scope` | `NULL` (old token, behaves by `role` exactly as before), `admin`, `ingest`, `poster`, `read`, `files` |
+| `scope` | `NULL` (old token, behaves by `role` exactly as before), `admin`, `ingest`, `poster`, `read`, `files`, `sounds` |
 | `user_id` | `poster` tokens act as this user (no FK; a missing or inactive user makes the token fail) |
 | `assignees` | JSON array of user ids; `ingest` tokens must assign every item to one of them |
 | `file_prefix` | drop-box key prefix (`files`, `ingest`); `NULL` = no file at all |
@@ -100,7 +112,7 @@ and is not recoverable.
 Audit trail: one row per successful state-changing call made with a token (`id, token_id, at,
 action, content_id, publication_id, ip`). Actions: `ingest.create`, `ingest.patch`, `ingest.upload`,
 `ingest.withdraw`, `ingest.delete`, `ingest.asset.delete`, `claim`, `release`, `complete`,
-`publication.create`, `publication.delete`, `metrics`, `file.put`, `file.delete`; any other route as
+`publication.create`, `publication.delete`, `metrics`, `file.put`, `file.delete`, `sounds.sightings`; any other route as
 `METHOD /pattern`. Written by one hook in `app.ts`.
 
 ## uploads · upload_parts
@@ -117,6 +129,21 @@ The drop box: `id, key` (unique), `stored_path` (random name under `DATA_DIR/fil
 sent to clients), `size, sha256, mime, created_at, expires_at, created_by_token`. Expired rows and their
 bytes are deleted by the scheduler.
 
+## sounds · sound_sightings
+
+The sound bank (`routes/sounds.ts`, `lib/sounds.ts`). Rows are made only from what the server itself read
+on a TikTok video page (through the guard in `lib/tiktok.ts`), never from data a caller sent.
+
+`sounds`: `id` (TikTok's music id, digits; primary key), `title`, `author`, `original` (0/1), `url` (the
+sound's TikTok page, formed from the id), `first_seen_at` / `last_seen_at` (oldest and newest evidence: a
+sighting's time, or our post's publication time), `status` (`active` | `hidden`), `note` (the admin's, ≤ 300).
+
+`sound_sightings`: one row per video outside our own posts: `id`, `sound_id` (→ sounds, cascade),
+`video_url` (unique; the canonical `https://www.tiktok.com/@user/video/<id>` the server read), `video_author`,
+`plays`, `likes`, `posted_at`, `source` (`trend` | `viral` | `manual`), `region` (2 letters), `rank` (its place
+in a trending list), `seen_at`, `token_id` (no FK; `NULL` for a person's paste). Reporting the same video again
+refreshes its counts, sound and `seen_at`, and the `source`/`region`/`rank` the new call gave.
+
 ## Status flow
 
 ```
@@ -130,7 +157,8 @@ DRAFT ──▶ READY ──▶ CLAIMED ──▶ PUBLISHED
   An ingest token's `withdraw` moves a `READY`, unclaimed item back to `DRAFT`.
 - `READY` — in the queue, claimable
 - `CLAIMED` — a KOL is holding it; only they can see and act on it
-- `PUBLISHED` — completed, with at least one published link recorded
+- `PUBLISHED` — completed, with at least one published link recorded. When `PRUNE_PUBLISHED_AFTER_DAYS` is
+  set, its media files are deleted that many days after its newest publication (rows stay; see assets)
 - `FAILED` — reserved for problem items
 
 ## The claim lock

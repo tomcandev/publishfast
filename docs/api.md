@@ -21,8 +21,11 @@ Authorization: Bearer pf_xxxxxxxxxxxxxxxx
 | `poster` | exactly one kol user (`user_id`) | `GET /api/contents`, `GET /api/contents/:id`, `POST /api/contents/claim-next`, `POST …/:id/claim`, `…/release`, `…/complete`, `GET /api/assets/:id[/download]`, `GET /api/contents/:id/assets.zip`, `POST /api/publications`, `DELETE /api/publications/:id`, `GET`/`POST /api/publications/:id/metrics` | admin, ingest, auth, `/api/me`, notification, stats, history, export, file routes; anything of another user |
 | `read` | nobody | `GET /api/export/publications`, `GET /api/export/metrics` | everything else |
 | `files` | nobody | `PUT`/`GET`/`HEAD`/`DELETE /api/files/<key>` and `GET /api/files` inside its `file_prefix` | everything else |
+| `sounds` | nobody | `POST /api/sounds/sightings`, `GET /api/sounds` | everything else (also `from-link`, which is for people) |
 
-- The allow-list for the narrow scopes (`ingest`, `poster`, `read`, `files`) lives in one place,
+`read` tokens may also call `GET /api/sounds` (the ranking).
+
+- The allow-list for the narrow scopes (`ingest`, `poster`, `read`, `files`, `sounds`) lives in one place,
   [`server/src/lib/scopes.ts`](../server/src/lib/scopes.ts), and is enforced for every request in the
   auth hook before the route runs. A route that is not listed answers **403** to these scopes, so a new
   route is closed to them until someone adds it there on purpose.
@@ -159,6 +162,12 @@ snapshot labelled `auto` each time it reads fresh counts.
 Each request re-checks that the caller may see the parent content item, so media
 is exactly as protected as the item itself.
 
+A file removed by the media prune (see [Media prune](#media-prune)) answers **`410`**
+`{ "error": "Media removed 2026-11-17", "reason": "pruned", "prunedAt": "…" }` on both routes, and the zip
+answers `410` when any of the item's files was pruned (a partial carousel is never served). Someone who
+may not see the item still gets `404`. Every asset in a content response carries `prunedAt` (`null` while
+the file exists).
+
 ---
 
 ## Ingestion — for the AI pipeline
@@ -286,6 +295,8 @@ curl -sS -X POST $BASE/api/ingest/contents/$ID/assets \
 | `GET /api/admin/publications` | all recorded links |
 | `GET/POST /api/admin/tokens` · `DELETE /api/admin/tokens/:id` | API tokens (unscoped, as before; the list also shows `scope`, `expiresAt`, `revokedAt`) |
 | `POST /api/admin/release-stale` | `{ "hours": 24 }` — requeue abandoned claims |
+| `GET /api/admin/storage` | `{ byStatus: [{status, files, bytes}], pruned: {files, bytes}, dropBox: {files, bytes}, unfinishedUploads: {uploads, bytes}, disk: {freeBytes, totalBytes}, prune: {afterDays} }` — media bytes by item status (files that still exist), what the prune removed so far, the drop box, unfinished uploads in parts, free disk |
+| `PATCH /api/admin/sounds/:id` | `{ "status"?: "active" \| "hidden", "note"?: string ≤ 300 \| null }` — hide or note a sound (`404` unknown) |
 
 Setting an item's status to `DRAFT` through `PATCH /api/admin/contents/:id` or `bulk-status` cancels a
 pending `releaseAt`, so a soft-archived item is not put straight back in the queue.
@@ -328,12 +339,107 @@ Expired files (row and bytes) are deleted by the server's scheduler every minute
 token prefix is capped at `MAX_FILES_PREFIX_BYTES` (`413`; admin tokens exempt), and a `PUT` answers
 `507` below the free-space floor.
 
+## Sounds — a ranked bank of TikTok sounds
+
+People attach a sound by hand in the TikTok app; the bank tells them which one to look for and learns
+which ones worked for us. Sounds enter it **only from what the server itself reads on a TikTok video
+page**: callers send video links, never sound names or counts (extra fields are ignored).
+
+**The URL guard** (`server/src/lib/tiktok.ts`, used for every server-side read of a TikTok link,
+including the public-count sync): parsed with the URL parser; `https` only; host exactly
+`www.tiktok.com`, `vt.tiktok.com`, `vm.tiktok.com` or `m.tiktok.com`; no userinfo, no port (a default
+`:443` is dropped by the parser), no IP literal; at most 2048 characters. Redirects are followed by hand,
+at most 5, every `Location` re-checked by the same rule. 15 s for the whole read, 3 MB body cap. The
+fetched page and any upstream error text are never returned; failures answer a `reason`:
+`refused`, `redirect_refused`, `too_many_redirects`, `too_large`, `timeout`, `unreachable`, `not_found`
+(a non-2xx page), `no_sound` (no video data on the page).
+
+### `POST /api/sounds/sightings` (`sounds` token, admin token or admin session)
+
+```json
+{ "items": [ { "videoUrl": "https://www.tiktok.com/@someone/video/7400000000000000101", "source": "trend", "region": "AU", "rank": 3 } ] }
+```
+
+1–50 items; `source` is `trend`, `viral` or `manual`; `region` 2 letters (optional); `rank` 1–1000
+(optional, its place in a trending list). The server reads each page (at most 4 reads at once across the
+server; a call stops starting new reads after 75 s and answers those items `unreadable`/`time_budget`;
+one call at a time per caller, `429 {reason: "busy"}` otherwise) and answers per item:
+
+```json
+{ "results": [ { "videoUrl": "…as sent…", "status": "recorded", "soundId": "7300000000000000201" },
+               { "videoUrl": "…", "status": "known", "soundId": "…" },
+               { "videoUrl": "…", "status": "unreadable", "reason": "refused" } ] }
+```
+
+`known`: the video was already in the bank (its counts, sound and `seen_at` are refreshed, and the
+`source`/`region`/`rank` of this call replace the old ones), or it is one of our own posts
+(`reason: "our_post"`, nothing recorded).
+
+### `POST /api/sounds/from-link` (a signed-in person, or an admin token)
+
+`{ "videoUrl": "…" }` — the "paste a viral video you saw" box: the same read for one link, source
+`manual`. `200 { status: "recorded" | "known", sound: { id, title, author, original, url, copyText } }`;
+`400 {reason: "refused"}` for a link that is not a TikTok video link; `422 {reason}` when no sound could be
+read. Not for tokens other than admin ones.
+
+### `GET /api/sounds?window=<7|14|30>&limit=<1-200>` (any signed-in person; `sounds`, `read` and admin tokens)
+
+Default `window=14`, `limit=50`. Active sounds, best first (admins may add `hidden=1` to include hidden ones;
+admins also get `note`):
+
+```json
+{ "window": 14, "sounds": [ {
+  "id": "7300000000000000201", "title": "Lofi Study Loop", "author": "Example Band", "original": false,
+  "url": "https://www.tiktok.com/music/Lofi-Study-Loop-7300000000000000201",
+  "copyText": "Lofi Study Loop Example Band", "status": "active",
+  "ours": { "posts": 4, "medianRatio": 2.3, "enough": true },
+  "sightings": { "count": 2, "bestPlays": 98765, "bestRank": 3, "sources": ["trend"],
+                 "newestVideoUrl": "…", "bestVideoUrl": "…", "bestVideoPlays": 98765 },
+  "score": 9.12, "lastSeenAt": "…" } ] }
+```
+
+- `copyText` is what finds the sound in TikTok's "Add sound" search: `<title> <author>` for a named track,
+  `original sound <author>` for an original sound.
+- `ours`: our publications with this sound whose time (`published_at`, else `created_at`) is inside the
+  window; `medianRatio` is the median of each post's views divided by its account's median views (same
+  user, same platform, same window); `enough` is false below 3 posts (the web shows "not enough of our own
+  posts yet").
+- Sightings count whenever they were seen; `staleness` ages them.
+
+**Ranking** (`soundScore` in `server/src/lib/sounds.ts`):
+
+```
+score = 3 × clamp(ourMedianRatio, 0, 5) × min(1, ourPosts / 3)
+      + 2 × log10(1 + bestPlays) / 6
+      + (bestRank ? (51 − min(bestRank, 50)) / 50 : 0)
+      − 0.1 × max(0, days since last_seen_at − 7)
+```
+
+`last_seen_at` is the newest evidence: a sighting's time, or the publication time of our post with it.
+
+The public-count sync (`POST /api/admin/metrics/sync`, `track-metrics`) fills each TikTok publication's
+`soundId`, `soundTitle`, `soundAuthor`, `soundOriginal` from the page it reads, and adds the sound to the bank.
+
+## Media prune
+
+Off unless `PRUNE_PUBLISHED_AFTER_DAYS` is set (whole days). Once a day (first run one hour after the
+server starts) the scheduler deletes the media **files** of items that are `PUBLISHED` and whose newest
+publication (`published_at`, else the publication's `created_at`) is older than that many days. Asset
+rows stay with `prunedAt` and their size; the item, its links, counts and snapshots stay. Never touched:
+`DRAFT`, `READY`, `CLAIMED`, `FAILED` items, items with no publication, items with a publication time that
+cannot be read, the drop box, unfinished uploads. By hand, with the same selection:
+
+```bash
+node server/dist/scripts/prune.js --days 3 --dry-run   # count, bytes, the 10 largest; deletes nothing
+node server/dist/scripts/prune.js --days 3 --yes       # does it once
+```
+
 ## Token CLI
 
 Tokens are made on the server, not in the web page:
 
 ```bash
-npm run -s token -w server -- create --name <name> --scope <admin|ingest|poster|read|files> \
+npm run -s token -w server -- create --name <name> --scope <admin|ingest|poster|read|files|sounds> \
     [--user <username>] [--assignees <u1,u2>] [--file-prefix <p>] [--expires <days>]
 npm run -s token -w server -- list [--events <name>]
 npm run -s token -w server -- revoke --name <name>
@@ -348,7 +454,7 @@ node server/dist/scripts/token.js <command> …
   so `… create … > token.txt` stores the token without showing it. Use `npm run -s` (or the `node`
   form): without `-s`, npm itself prints a two-line banner on stdout.
 - `--user` (an assigned-only kol user) is required for `poster`; `--assignees` is only for `ingest`; `--file-prefix` is
-  required for `files` and optional for `ingest`. A duplicate active name is refused.
+  required for `files` and optional for `ingest`. `sounds` takes none of them. A duplicate active name is refused.
 - `list` shows name, scope, user, assignees, file prefix, created, last used, expires, revoked — never a
   token or a hash. `--events <name>` shows that token's last 50 state-changing calls.
 - `rotate` revokes the active token of that name and makes a new one with the same settings (an expiry
@@ -356,6 +462,9 @@ node server/dist/scripts/token.js <command> …
   and its drop-box files move to the new token, so a draft or an in-flight claim continues.
 
 ## Known limits (documented, not built)
+
+- The TikTok URL guard pins host names, not addresses: it trusts TikTok's DNS for those four names.
+- Sound sightings and their sounds are never pruned (small rows).
 
 - `token_events` and `metric_snapshots` are never pruned. Both are small rows; prune by hand (or add a
   job) if they ever matter.

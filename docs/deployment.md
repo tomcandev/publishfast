@@ -161,6 +161,49 @@ such file that already exists, so look at them first with the `comm` line above
 and keep a backup. It never touches drafts without
 `release_at`.
 
+### Upgrading to sounds and the media prune (2026-11-14)
+
+Additive again: four nullable columns on `publications` (`sound_id`, `sound_title`, `sound_author`,
+`sound_original`), one on `assets` (`pruned_at`), two new tables (`sounds`, `sound_sightings`). No
+existing row changes; no file is deleted by the upgrade. The steps are the usual ones:
+
+```bash
+cd ~/projects/publishfast
+tar -czf ~/backups/publishfast-pre-sounds-$(date +%F-%H%M).tar.gz -C ~/projects/publishfast data
+git pull
+npm install
+npm run build
+node server/dist/db/migrate.js            # prints "Schema up to date."
+sudo systemctl restart publishfast
+curl -s http://127.0.0.1:8055/api/health   # {"ok":true}
+journalctl -u publishfast -n 20 | grep 'Media prune'   # "Media prune: off (…)" until you set it
+```
+
+What changes at once: the Sounds tab appears for everyone; the public-count sync now reads TikTok pages
+only through the URL guard (TikTok hosts only) and fills each TikTok post's sound. YouTube and other links
+are read exactly as before.
+
+**The media prune is off until you set `PRUNE_PUBLISHED_AFTER_DAYS`.** It deletes people's files, so
+before the first run:
+
+1. Take a backup of `data/` (above).
+2. Run the dry run with the number of days you mean to set, and read it: how many files, how many bytes,
+   the 10 largest, and how many items were left alone because a publication time cannot be read.
+   ```bash
+   cd ~/projects/publishfast
+   node server/dist/scripts/prune.js --days 3 --dry-run
+   ```
+   Only items that are `PUBLISHED` with a publication older than that are listed. If anything there
+   should be kept, move that item back to `READY` (Admin → Content) first: the prune never touches it then.
+3. Either run it once by hand (`node server/dist/scripts/prune.js --days 3 --yes`) or set
+   `PRUNE_PUBLISHED_AFTER_DAYS=3` in `.env` and restart: the server logs
+   `Media prune: on …` at start, runs the first prune one hour later, then once a day, and logs each run
+   (`Media prune: deleted N file(s), X MB freed …`).
+4. Admin → Storage shows what is stored by item status, what was removed so far and the free disk.
+
+To turn it off again, remove the line (or set `0`) and restart. Files already removed stay removed (restore
+them from the backup if needed); their rows say when.
+
 ## Tokens
 
 Create **no scoped token until the upgrade's smoke check has passed** (the old
@@ -185,6 +228,7 @@ node server/dist/scripts/token.js create --name air-pte --scope poster --user yt
 node server/dist/scripts/token.js create --name air-vichat --scope poster --user yt-vichat > ~/air-vichat.token
 node server/dist/scripts/token.js create --name weekly-read --scope read --expires 90 > ~/weekly.token
 node server/dist/scripts/token.js create --name vps-voice --scope files --file-prefix nhi/ > ~/vps-voice.token
+node server/dist/scripts/token.js create --name air-sounds --scope sounds > ~/air-sounds.token
 node server/dist/scripts/token.js list
 node server/dist/scripts/token.js list --events air-pte
 node server/dist/scripts/token.js rotate --name air-pte > ~/air-pte.token
@@ -207,6 +251,7 @@ machine over a secure channel and delete it here.
 | `MAX_FILE_BYTES` | `94371840` (90 MB) | per drop-box file (`PUT /api/files/<key>`); keep under Cloudflare's 100 MB request limit |
 | `UPLOAD_PART_BYTES` | `33554432` (32 MB) | part size for uploads in parts |
 | `SWEEP_ORPHAN_UPLOADS` | off | `1`/`true`: the scheduler deletes files in `uploads/` with no asset row older than one hour |
+| `PRUNE_PUBLISHED_AFTER_DAYS` | off | whole days (1–3650). Once a day the media files of `PUBLISHED` items whose newest publication is older than that are deleted (rows stay, downloads answer `410`). Unset, `0` or anything else = never. Run `node server/dist/scripts/prune.js --days N --dry-run` and read it before setting it |
 | `REQUEST_TIMEOUT_MS` | `1800000` (30 min) | longest one request may take, body included; keep above the slowest real upload |
 | `MAX_FILES_PREFIX_BYTES` | `2147483648` (2 GB) | drop box: total under one token prefix; admin tokens exempt |
 | `MAX_INGEST_BYTES` | `5368709120` (5 GB) | total DRAFT+READY media one ingest-scope token may hold; admin tokens exempt |
