@@ -185,6 +185,9 @@ machine over a secure channel and delete it here.
 | `PUBLIC_URL` | `http://localhost:8055` | used for absolute links |
 | `MAX_UPLOAD_BYTES` | `536870912` (512 MB) | per file |
 | `MAX_FILE_BYTES` | `209715200` (200 MB) | per drop-box file (`PUT /api/files/<key>`) |
+| `MAX_FILES_PREFIX_BYTES` | `2147483648` (2 GB) | drop box: total under one token prefix; admin tokens exempt |
+| `MAX_INGEST_BYTES` | `5368709120` (5 GB) | total DRAFT+READY media one ingest-scope token may hold; admin tokens exempt |
+| `MIN_FREE_BYTES` | `2147483648` (2 GB) | uploads (all callers) answer `507` when they would leave less free disk |
 
 ## Troubleshooting
 

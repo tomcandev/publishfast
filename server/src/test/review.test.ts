@@ -4,6 +4,7 @@
  */
 import './env.js'
 import assert from 'node:assert/strict'
+import { readdirSync } from 'node:fs'
 import { after, before, beforeEach, describe, it } from 'node:test'
 import type { FastifyInstance } from 'fastify'
 import { eq } from 'drizzle-orm'
@@ -12,6 +13,7 @@ import { db, sqlite } from '../db/index.js'
 import { migrate } from '../db/migrate.js'
 import { assets, contents, metricSnapshots, publications } from '../db/schema.js'
 import { createApiToken } from '../lib/auth.js'
+import { config } from '../lib/config.js'
 import { _resetBearerFailures } from '../lib/rateLimit.js'
 import { call, makeContent, makeUser, multipartFile, sessionFor } from './helpers.js'
 
@@ -269,5 +271,104 @@ describe('finding 6: untyped uploads from the old pipeline keep showing up', () 
     // And the image previews inline with the right type.
     const res = await call(app, 'GET', `/api/assets/${assetByName('s1.jpg').id}`, { cookie: adminCookie })
     assert.equal(res.headers['content-type'], 'image/jpeg')
+  })
+})
+
+describe('finding 5: disk', () => {
+  const uploadsOnDisk = () => readdirSync(config.uploadsDir).length
+  const filesOnDisk = () => readdirSync(config.filesDir).length
+
+  it('(a) an oversize upload leaves no bytes and no rows behind', async () => {
+    const saved = config.maxUploadBytes
+    config.maxUploadBytes = 1000
+    const small = await buildApp({ logger: false })
+    config.maxUploadBytes = saved
+    try {
+      const id = makeContent({ status: 'DRAFT' })
+      const before = uploadsOnDisk()
+      const { payload, headers } = multipartFile('big.mp4', 'video/mp4', Buffer.alloc(5000, 1))
+      const res = await small.inject({
+        method: 'POST',
+        url: `/api/ingest/contents/${id}/assets`,
+        headers: { ...headers, authorization: `Bearer ${legacyAdmin}` },
+        payload,
+      })
+      assert.equal(res.statusCode, 413)
+      assert.equal(uploadsOnDisk(), before)
+      assert.equal(db.select().from(assets).where(eq(assets.contentId, id)).all().length, 0)
+    } finally {
+      await small.close()
+    }
+  })
+
+  it('(a) a refused second part removes the first part’s bytes too', async () => {
+    const maker = createApiToken('review-maker-parts', 'kol', { scope: 'ingest' })
+    const id = (await call(app, 'POST', '/api/ingest/contents', { token: maker }, { code: 'REVIEW-PARTS' })).json().content.id
+    const before = uploadsOnDisk()
+    const a = multipartFile('ok.mp4', 'video/mp4', Buffer.from('video'))
+    const b = multipartFile('evil.svg', 'image/svg+xml', Buffer.from('<svg/>'))
+    const boundaryA = a.headers['content-type'].split('boundary=')[1]!
+    const boundaryB = b.headers['content-type'].split('boundary=')[1]!
+    const second = b.payload.toString('latin1').split(boundaryB).join(boundaryA)
+    const payload = Buffer.concat([
+      Buffer.from(a.payload.toString('latin1').replace(`--${boundaryA}--\r\n`, ''), 'latin1'),
+      Buffer.from(second.slice(0), 'latin1'),
+    ])
+    const res = await app.inject({
+      method: 'POST',
+      url: `/api/ingest/contents/${id}/assets`,
+      headers: { 'content-type': a.headers['content-type'], authorization: `Bearer ${maker}` },
+      payload,
+    })
+    assert.equal(res.statusCode, 400)
+    assert.equal(uploadsOnDisk(), before)
+    assert.equal(db.select().from(assets).where(eq(assets.contentId, id)).all().length, 0)
+  })
+
+  it('(b) the drop box caps the total bytes under one prefix (admin tokens exempt)', async () => {
+    const saved = config.maxFilesPrefixBytes
+    config.maxFilesPrefixBytes = 1000
+    try {
+      const worker = createApiToken('review-cap-files', 'kol', { scope: 'files', filePrefix: 'cap/' })
+      const put = (key: string, n: number, token = worker) =>
+        app.inject({ method: 'PUT', url: `/api/files/${key}`, headers: { authorization: `Bearer ${token}` }, payload: Buffer.alloc(n, 1) })
+      assert.equal((await put('cap/a', 600)).statusCode, 201)
+      const before = filesOnDisk()
+      assert.equal((await put('cap/b', 600)).statusCode, 413)
+      assert.equal(filesOnDisk(), before, 'nothing kept')
+      assert.equal((await put('cap/a', 900)).statusCode, 200, 'replacing counts the new size only')
+      assert.equal((await put('cap/c', 600, legacyAdmin)).statusCode, 201, 'old admin token exempt')
+    } finally {
+      config.maxFilesPrefixBytes = saved
+    }
+  })
+
+  it('(b) an ingest token’s DRAFT+READY assets are capped in total', async () => {
+    const saved = config.maxIngestBytes
+    config.maxIngestBytes = 1000
+    try {
+      const maker = createApiToken('review-cap-ingest', 'kol', { scope: 'ingest' })
+      const id = (await call(app, 'POST', '/api/ingest/contents', { token: maker }, { code: 'REVIEW-CAP' })).json().content.id
+      assert.equal((await uploadPart(id, maker, 'a.mp4', 'video/mp4', Buffer.alloc(600, 1))).statusCode, 201)
+      const before = uploadsOnDisk()
+      assert.equal((await uploadPart(id, maker, 'b.mp4', 'video/mp4', Buffer.alloc(600, 1))).statusCode, 413)
+      assert.equal(uploadsOnDisk(), before)
+      assert.equal((await uploadPart(id, legacyAdmin, 'c.mp4', 'video/mp4', Buffer.alloc(600, 1))).statusCode, 201, 'old admin token exempt')
+    } finally {
+      config.maxIngestBytes = saved
+    }
+  })
+
+  it('(c) both upload routes refuse with 507 below the free-space floor, old tokens included', async () => {
+    const saved = config.minFreeBytes
+    config.minFreeBytes = Number.MAX_SAFE_INTEGER
+    try {
+      const id = makeContent({ status: 'DRAFT' })
+      assert.equal((await uploadPart(id, legacyAdmin, 'x.mp4', 'video/mp4')).statusCode, 507)
+      const put = await app.inject({ method: 'PUT', url: '/api/files/any/x', headers: { authorization: `Bearer ${legacyAdmin}` }, payload: 'x' })
+      assert.equal(put.statusCode, 507)
+    } finally {
+      config.minFreeBytes = saved
+    }
   })
 })

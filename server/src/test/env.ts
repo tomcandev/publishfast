@@ -9,3 +9,6 @@ import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 
 process.env.DATA_DIR = mkdtempSync(join(tmpdir(), 'pf-test-'))
+// The free-space floor is tested explicitly (review.test.ts); elsewhere a full
+// developer disk must not turn uploads into 507s.
+process.env.MIN_FREE_BYTES ??= '0'

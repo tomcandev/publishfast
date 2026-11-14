@@ -197,7 +197,13 @@ the current `status`. Once back in `DRAFT` the token may patch, upload and delet
 `READY` (or `releaseAt`) again.
 
 ### `DELETE /api/ingest/contents/:id/assets/:assetId` · `DELETE /api/ingest/contents/:id`
-Delete one asset, or the whole item with its files. `DRAFT` only (`409` otherwise).
+Delete one asset, or the whole item with its files. `DRAFT` only (`409` otherwise). Withdraw and both
+deletes answer `409` with `reason: "has_publications"` when the item has any published link, so links
+and metric history are never erased.
+
+**Disk limits.** Every upload answers `507` when it would leave less than `MIN_FREE_BYTES` free. An
+ingest-scope token may hold at most `MAX_INGEST_BYTES` of media in its `DRAFT` and `READY` items
+(`413` beyond). A failed, oversize or aborted upload leaves no bytes and no rows behind.
 
 Asset `type`: a declared `video/*` is `video` and `image/*` is `image`. Otherwise the file name decides:
 image extensions (`.jpg .jpeg .png .webp .gif .heic .heif`) are `image` and video extensions
@@ -287,7 +293,9 @@ curl -X PUT --data-binary @issue-12.zip -H "Authorization: Bearer $PF_FILES_TOKE
   -H 'X-Expires-Days: 14' https://publishfast.example.com/api/files/nhi/voice/issue-12.zip
 ```
 
-Expired files (row and bytes) are deleted by the server's scheduler every minute.
+Expired files (row and bytes) are deleted by the server's scheduler every minute. The total under one
+token prefix is capped at `MAX_FILES_PREFIX_BYTES` (`413`; admin tokens exempt), and a `PUT` answers
+`507` below the free-space floor.
 
 ## Token CLI
 

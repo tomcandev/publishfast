@@ -7,6 +7,7 @@ import { and, asc, eq, gt, sql } from 'drizzle-orm'
 import { db } from '../db/index.js'
 import { files, type StoredFile } from '../db/schema.js'
 import { config } from '../lib/config.js'
+import { NO_SPACE, belowFreeSpaceFloor } from '../lib/disk.js'
 import { sendFileHeaders } from '../lib/download.js'
 import { isValidFileKey, removeStoredFile, storedFilePath } from '../lib/files.js'
 import { requireFileToken } from '../lib/guards.js'
@@ -95,6 +96,10 @@ export async function fileRoutes(app: FastifyInstance) {
       return reply.code(413).header('Connection', 'close').send({ error: `File is larger than ${max} bytes` })
     }
 
+    if (await belowFreeSpaceFloor(config.filesDir, Number.isFinite(declared) ? declared : 0)) {
+      return reply.code(507).header('Connection', 'close').send({ error: NO_SPACE })
+    }
+
     const storedPath = `${randomUUID()}.bin`
     const abs = storedFilePath(storedPath)!
     const hash = createHash('sha256')
@@ -130,8 +135,28 @@ export async function fileRoutes(app: FastifyInstance) {
     }
 
     // Replace in one transaction; the old bytes are deleted after it commits.
+    // The total under the caller's prefix is capped (admin-power tokens exempt).
+    const prefix = prefixFor(req) ?? ''
     let replaced: string | null = null
+    let overCap = false
     db.transaction((tx) => {
+      if (prefix !== '') {
+        const used = tx
+          .select({ n: sql<number>`coalesce(sum(${files.size}), 0)` })
+          .from(files)
+          .where(
+            and(
+              sql`substr(${files.key}, 1, ${prefix.length}) = ${prefix}`,
+              sql`${files.key} <> ${key}`,
+              gt(files.expiresAt, now.toISOString()),
+            ),
+          )
+          .get()
+        if (Number(used?.n ?? 0) + size > config.maxFilesPrefixBytes) {
+          overCap = true
+          return
+        }
+      }
       const old = tx.select().from(files).where(eq(files.key, key)).get()
       if (old) {
         tx.update(files).set(values).where(eq(files.id, old.id)).run()
@@ -140,6 +165,10 @@ export async function fileRoutes(app: FastifyInstance) {
         tx.insert(files).values({ id: randomUUID(), key, ...values }).run()
       }
     })
+    if (overCap) {
+      await removeStoredFile(storedPath)
+      return reply.code(413).send({ error: `The files under "${prefix}" would exceed ${config.maxFilesPrefixBytes} bytes` })
+    }
     if (replaced) await removeStoredFile(replaced)
 
     return reply

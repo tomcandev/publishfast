@@ -9,6 +9,7 @@ import { z } from 'zod'
 import { db } from '../db/index.js'
 import { CONTENT_TYPES, assets, contents, publications, users, type Content } from '../db/schema.js'
 import { config } from '../lib/config.js'
+import { NO_SPACE, belowFreeSpaceFloor, byteLimit, httpError, ingestBytesHeld } from '../lib/disk.js'
 import { classifyUpload, isActiveContent } from '../lib/download.js'
 import { META_MAX_BYTES, isoTime, jsonObject } from '../lib/fields.js'
 import { requireIngest } from '../lib/guards.js'
@@ -89,6 +90,12 @@ const HAS_PUBLICATIONS = {
 }
 
 const ASSIGNEE_REQUIRED = 'This token must assign every item to one of its assignees'
+
+/** A random stored name; only a short alphanumeric extension of the client's name survives. */
+export function storedName(filename: string) {
+  const ext = extname(filename)
+  return `${randomUUID()}${/^\.[A-Za-z0-9]{1,10}$/.test(ext) ? ext.toLowerCase() : ''}`
+}
 
 async function unlinkUpload(filePath: string) {
   const root = config.uploadsDir
@@ -248,6 +255,13 @@ export async function ingestRoutes(app: FastifyInstance) {
       return reply.code(400).send({ error: 'Content-Type must be multipart/form-data' })
     }
 
+    // Free-space floor for everyone; the per-token total only for ingest-scope tokens.
+    const declared = Number(req.headers['content-length']) || 0
+    if (await belowFreeSpaceFloor(config.uploadsDir, declared)) return reply.code(507).send({ error: NO_SPACE })
+    let allowance = scoped ? config.maxIngestBytes - ingestBytesHeld(scoped.id) : Infinity
+    const OVER_CAP = 'This token already holds its maximum of draft and ready media'
+    if (allowance <= 0) return reply.code(413).send({ error: OVER_CAP })
+
     const nextOrder =
       (db
         .select({ n: sql<number>`coalesce(max(${assets.sortOrder}), -1)` })
@@ -269,15 +283,15 @@ export async function ingestRoutes(app: FastifyInstance) {
             statusCode: 400,
           })
         }
-        const ext = extname(part.filename || '').slice(0, 12) || ''
-        const stored = `${randomUUID()}${ext}`
+        const stored = storedName(part.filename || '')
         const abs = join(config.uploadsDir, stored)
 
-        await pipeline(part.file, createWriteStream(abs))
-        if (part.file.truncated) {
-          throw Object.assign(new Error('File size exceeds allowed limit'), { statusCode: 413 })
-        }
+        // Recorded before writing, so a failed, oversize or aborted part leaves nothing behind.
         writtenPaths.push(abs)
+        const limit = byteLimit(allowance, 413, OVER_CAP)
+        await pipeline(part.file, limit, createWriteStream(abs))
+        if (part.file.truncated) throw httpError(413, 'File size exceeds allowed limit')
+        allowance -= limit.bytes()
 
         if (scoped) {
           // The item may have been released while the file streamed in.

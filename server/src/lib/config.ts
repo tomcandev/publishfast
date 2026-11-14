@@ -27,6 +27,12 @@ export const config = {
   maxUploadBytes: Number(process.env.MAX_UPLOAD_BYTES ?? 536_870_912),
   /** Per drop-box file. */
   maxFileBytes: Number(process.env.MAX_FILE_BYTES ?? 209_715_200),
+  /** Drop box: total bytes under one token prefix (admin-power tokens exempt). */
+  maxFilesPrefixBytes: Number(process.env.MAX_FILES_PREFIX_BYTES ?? 2 * 1024 ** 3),
+  /** Total bytes of DRAFT+READY assets one ingest-scope token may hold. */
+  maxIngestBytes: Number(process.env.MAX_INGEST_BYTES ?? 5 * 1024 ** 3),
+  /** Uploads are refused (507) when they would leave less free disk than this. */
+  minFreeBytes: Number(process.env.MIN_FREE_BYTES ?? 2 * 1024 ** 3),
   isProd: process.env.NODE_ENV === 'production',
   /**
    * In development we fall back to a fixed secret so `npm run dev` works with
