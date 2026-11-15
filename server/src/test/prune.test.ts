@@ -35,7 +35,9 @@ const run = promisify(execFile)
 const here = dirname(fileURLToPath(import.meta.url))
 const serverDir = join(here, '..', '..')
 
-const NOW = new Date('2026-11-14T00:00:00.000Z')
+// The real clock, not a fixed date: rows the helpers write without a time get the real "now", and a fixed
+// NOW that falls behind it reads as a clock that went backwards (the tests broke the day after they were written).
+const NOW = new Date()
 const daysAgo = (d: number) => new Date(NOW.getTime() - d * 86_400_000).toISOString()
 const PLATFORMS = ['tiktok', 'instagram', 'facebook', 'youtube'] as const
 /** Rows are written by the server long before NOW, unless a test says otherwise. */
