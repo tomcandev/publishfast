@@ -12,3 +12,5 @@ process.env.DATA_DIR = mkdtempSync(join(tmpdir(), 'pf-test-'))
 // The free-space floor is tested explicitly (review.test.ts); elsewhere a full
 // developer disk must not turn uploads into 507s.
 process.env.MIN_FREE_BYTES ??= '0'
+// tikwm's one-a-second spacing is tested explicitly (tiktok.test.ts); elsewhere it would only slow the fakes.
+process.env.TIKWM_GAP_MS ??= '0'

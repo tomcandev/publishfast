@@ -19,9 +19,39 @@ import {
   parseTikTokVideoPage,
   parseTikwmVideo,
   soundUrl,
+  tikwmTurn,
 } from '../lib/tiktok.js'
 
-const fixture = (name: string) => readFileSync(join(dirname(fileURLToPath(import.meta.url)), 'fixtures', name), 'utf8')
+describe('tikwm calls wait their turn (its free API answers about one a second)', () => {
+  it('runs calls made together one after another, each starting the gap after the last ended', async () => {
+    const before = process.env.TIKWM_GAP_MS
+    process.env.TIKWM_GAP_MS = '40'
+    try {
+      const spans: Array<[number, number]> = []
+      let running = 0
+      let overlapped = false
+      const call = (n: number) =>
+        tikwmTurn(async () => {
+          running++
+          if (running > 1) overlapped = true
+          const start = Date.now()
+          await new Promise((r) => setTimeout(r, 5))
+          running--
+          spans.push([start, Date.now()])
+          if (n === 2) throw new Error('a failed call still ends its turn')
+          return n
+        })
+      const results = await Promise.allSettled([call(1), call(2), call(3)])
+      assert.deepEqual(results.map((r) => r.status), ['fulfilled', 'rejected', 'fulfilled'])
+      assert.equal(overlapped, false)
+      for (let i = 1; i < spans.length; i++) assert.ok(spans[i]![0] - spans[i - 1]![1] >= 35, `gap ${i}`)
+    } finally {
+      process.env.TIKWM_GAP_MS = before
+    }
+  })
+})
+
+const fixture =(name: string) => readFileSync(join(dirname(fileURLToPath(import.meta.url)), 'fixtures', name), 'utf8')
 
 describe('the TikTok page parser', () => {
   it('a named track (current page format)', () => {

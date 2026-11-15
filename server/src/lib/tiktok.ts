@@ -202,6 +202,34 @@ export async function readTikwm(target: URL): Promise<TikwmVideo | null> {
   if (!clean) return null
   clean.search = ''
   clean.hash = ''
+  return tikwmTurn(() => askTikwm(clean))
+}
+
+/**
+ * tikwm's free API answers about one request a second: calls made together
+ * beyond that come back empty (seen 2026-11-15: of 4 links sent at once, 1 was
+ * read; one at a time, all 37). So every call to it waits its turn, starting at
+ * least TIKWM_GAP_MS (default 1100 ms; the tests set 0) after the last one ended.
+ */
+let tikwmQueue: Promise<unknown> = Promise.resolve()
+let tikwmLastEnd = 0
+
+export function tikwmTurn<T>(fn: () => Promise<T>): Promise<T> {
+  const gap = Number(process.env.TIKWM_GAP_MS ?? 1100)
+  const run = tikwmQueue.then(async () => {
+    const wait = tikwmLastEnd + (Number.isFinite(gap) && gap > 0 ? gap : 0) - Date.now()
+    if (wait > 0) await new Promise((resolve) => setTimeout(resolve, wait))
+    try {
+      return await fn()
+    } finally {
+      tikwmLastEnd = Date.now()
+    }
+  })
+  tikwmQueue = run.catch(() => undefined)
+  return run
+}
+
+async function askTikwm(clean: URL): Promise<TikwmVideo | null> {
   try {
     const page = await guardedFetch(`https://www.tikwm.com/api/?url=${encodeURIComponent(clean.href)}`, TIKWM_HOSTS, {
       accept: 'application/json',
