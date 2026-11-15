@@ -106,16 +106,20 @@ file) to be sure the `-wal` and `-shm` sidecars come along.
 
 ## Upgrades
 
+One command, no password (from any machine with the `oracle` SSH host):
+
 ```bash
-cd ~/projects/publishfast
-git pull
-npm install
-npm run build
-sudo systemctl restart publishfast
+ssh oracle '~/projects/publishfast/deploy/deploy.sh'
 ```
 
-Schema changes apply automatically at boot. `data/` is never touched by a
-deploy.
+`deploy/deploy.sh` pulls, runs `npm ci` only when the dependencies changed, builds with the service's Node
+22, copies the database to `~/backups/publishfast-deploy-<time>.db` (the last 10 are kept), migrates,
+restarts through the passwordless sudo rule for exactly `/usr/bin/systemctl restart publishfast.service`, and
+waits for `/api/health`. With no new commits it does nothing (`FORCE=1` rebuilds and restarts). On a failed
+health check it prints the log and the roll-back commands. `data/` uploads are never touched by a deploy.
+
+Restarting by hand without a password: `sudo -n /usr/bin/systemctl restart publishfast.service` (the
+`.service` suffix is what the sudo rule matches; `sudo systemctl restart publishfast` asks for a password).
 
 ### Upgrading to scoped tokens (agent API)
 
