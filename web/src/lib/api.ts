@@ -78,7 +78,11 @@ export interface RankedSound {
     newestVideoUrl: string | null
     bestVideoUrl: string | null
     bestVideoPlays: number | null
+    /** Creators other than the sound's own author seen using it. */
+    reusers: number
   }
+  /** The quality gate's verdict; only admins with "Show hidden" ever see a failing one. */
+  quality: { pass: boolean; reason: 'ours' | 'trend' | 'plays' | 'speech' | 'no_evidence' }
   score: number
   lastSeenAt: string
 }

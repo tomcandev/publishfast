@@ -20,7 +20,24 @@ import { migrate } from '../db/migrate.js'
 import { apiTokens, metricSnapshots, publications, soundSightings, sounds, tokenEvents } from '../db/schema.js'
 import { createApiToken } from '../lib/auth.js'
 import { syncAllPublicationMetrics } from '../lib/metrics.js'
-import { DAILY_PASTES, DAILY_SIGHTINGS, _clearRankingCache, _resetDailyCaps, _useDaily, rankSounds, rankSoundsCached } from '../lib/sounds.js'
+import {
+  DAILY_PASTES,
+  DAILY_SIGHTINGS,
+  MIN_REUSERS,
+  OURS_RATIO,
+  PLAYS_FLOOR,
+  _clearRankingCache,
+  _resetDailyCaps,
+  _useDaily,
+  foldName,
+  idSeconds,
+  isOriginalLike,
+  outsideEvidence,
+  rankSounds,
+  rankSoundsCached,
+  sightingHandle,
+  soundQuality,
+} from '../lib/sounds.js'
 import { TIKTOK_HOSTS } from '../lib/tiktok.js'
 import { call, makeContent, makeUser, sessionFor } from './helpers.js'
 
@@ -392,6 +409,127 @@ describe('the ranking with our own posts', () => {
   })
 })
 
+describe('the quality gate: background audio, not someone talking', () => {
+  // TikTok ids carry their creation second in the high 32 bits.
+  const idAt = (seconds: number, low = 1) => ((BigInt(seconds) << 32n) + BigInt(low)).toString()
+  const T = 1_778_000_000
+
+  it('soundQuality: ours first, then an original needs 2 reusers, then a trend rank or the plays floor', () => {
+    assert.deepEqual([MIN_REUSERS, PLAYS_FLOOR, OURS_RATIO], [2, 20_000, 1.25])
+    const none = { reusers: 0, bestPlays: 0, bestRank: null }
+    const q = (originalLike: boolean, outside = none, ours = { enough: false, medianRatio: null as number | null }) =>
+      soundQuality({ originalLike, ours, outside })
+    assert.deepEqual(q(false), { pass: false, reason: 'no_evidence' })
+    assert.deepEqual(q(true), { pass: false, reason: 'speech' })
+    assert.deepEqual(q(false, { reusers: 1, bestPlays: 20_000, bestRank: null }), { pass: true, reason: 'plays' })
+    assert.deepEqual(q(false, { reusers: 1, bestPlays: 19_999, bestRank: null }), { pass: false, reason: 'no_evidence' })
+    assert.deepEqual(q(false, { reusers: 1, bestPlays: 10, bestRank: 40 }), { pass: true, reason: 'trend' })
+    // One person's original sound, however many plays its own video has: probably their voice.
+    assert.deepEqual(q(true, { reusers: 1, bestPlays: 5_000_000, bestRank: 1 }), { pass: false, reason: 'speech' })
+    assert.deepEqual(q(true, { reusers: 2, bestPlays: 5_000, bestRank: null }), { pass: false, reason: 'no_evidence' })
+    assert.deepEqual(q(true, { reusers: 2, bestPlays: 25_000, bestRank: null }), { pass: true, reason: 'plays' })
+    // Our own posts, enough of them and clearly above the account's usual, qualify either kind.
+    assert.deepEqual(q(true, none, { enough: true, medianRatio: 1.25 }), { pass: true, reason: 'ours' })
+    assert.deepEqual(q(true, none, { enough: true, medianRatio: 1.2 }), { pass: false, reason: 'speech' })
+    assert.deepEqual(q(false, none, { enough: false, medianRatio: 4 }), { pass: false, reason: 'no_evidence' })
+  })
+
+  it('outsideEvidence leaves out the sound’s own author: by name, or by a video made with the sound', () => {
+    const sound = { id: idAt(T), title: 'original sound - ivan.r.music', author: '𝐈𝐯𝐚́𝐧 𝐑 Music 🎧' }
+    const x = (handle: string, at: number, plays = 0, rank: number | null = null) => ({ handle, videoId: idAt(at, 7), plays, rank })
+    // ivanrmusic: the folded title name; ptebydee: its video was made 1 s before the sound.
+    const out = outsideEvidence(sound, [x('ivanrmusic', T + 9_000_000, 9_000_000), x('ptebydee', T - 1, 8_000_000, 1), x('ptebydee', T + 50_000, 7_000_000), x('a.fan', T + 100_000, 30_000), x('b.fan', T + 200_000, 1_000, 5)])
+    assert.deepEqual(out, { reusers: 2, bestPlays: 30_000, bestRank: 5 })
+    // The display name folds too ("𝐈𝐯𝐚́𝐧 𝐑 Music" -> "ivanrmusic").
+    assert.equal(foldName(sound.author), 'ivanrmusic')
+    assert.equal(outsideEvidence({ ...sound, title: 'original sound' }, [x('ivanrmusic', T + 9_000_000, 9)]).reusers, 0)
+    assert.equal(idSeconds(idAt(T)), T)
+    assert.equal(idSeconds('123'), null)
+    assert.equal(sightingHandle({ videoAuthor: null, videoUrl: 'https://www.tiktok.com/@Some.One/video/1' }), 'some.one')
+    assert.equal(sightingHandle({ videoAuthor: ' Other ', videoUrl: 'https://www.tiktok.com/@x/video/1' }), 'other')
+    assert.ok(isOriginalLike({ original: false, title: 'original sound - Charmaine | PTE Trainer' }))
+    assert.ok(isOriginalLike({ original: false, title: 'âm thanh gốc' }))
+    assert.ok(isOriginalLike({ original: true, title: 'Night Trouble' }))
+    assert.ok(!isOriginalLike({ original: false, title: 'Beanie - Piano Version' }))
+  })
+
+  it('GET /api/sounds serves only sounds that pass; an admin’s "Show hidden" serves all, each with its verdict', async () => {
+    const now = new Date().toISOString()
+    const seen = (soundId: string, handle: string, videoId: string, plays: number) =>
+      db.insert(soundSightings)
+        .values({ id: randomUUID(), soundId, videoUrl: `https://www.tiktok.com/@${handle}/video/${videoId}`, videoAuthor: handle, plays, source: 'viral', seenAt: now })
+        .run()
+    const voice = idAt(T + 10)
+    const reused = idAt(T + 20)
+    const track = idAt(T + 30)
+    const quiet = idAt(T + 40)
+    db.insert(sounds).values([
+      { id: voice, title: 'original sound', author: 'Gate Teacher', original: true, lastSeenAt: now },
+      { id: reused, title: 'original sound - gate.beats', author: 'Gate Beats', original: true, lastSeenAt: now },
+      { id: track, title: 'Gate Piano', author: 'Gate Band', original: false, lastSeenAt: now },
+      { id: quiet, title: 'Gate Quiet', author: 'Nobody', original: false, lastSeenAt: now },
+    ]).run()
+    // A teacher's voiceover: 4M plays, but only on her own video (made with the sound).
+    seen(voice, 'gate.teacher', idAt(T + 9, 3), 4_000_000)
+    // A beat: its maker's video plus two other creators, one of them over the floor.
+    seen(reused, 'gate.beats', idAt(T + 100_000, 3), 900)
+    seen(reused, 'study.one', idAt(T + 200_000, 3), 45_000)
+    seen(reused, 'study.two', idAt(T + 300_000, 3), 3_000)
+    // A named track on one other creator's video over the floor; another under it.
+    seen(track, 'study.one', idAt(T + 400_000, 3), 120_000)
+    seen(quiet, 'study.two', idAt(T + 500_000, 3), 900)
+    _clearRankingCache()
+
+    const list = async (who: Record<string, string>, q = '') =>
+      (await call(app, 'GET', `/api/sounds?limit=200${q}`, who)).json().sounds as { id: string; quality: { pass: boolean; reason: string }; sightings: { reusers: number } }[]
+    for (const who of [{ cookie: await sessionFor(kol.id) }, { token: soundsToken }, { cookie: await sessionFor(admin.id) }]) {
+      const ids = (await list(who)).map((s) => s.id)
+      assert.ok(!ids.includes(voice), 'a voiceover is left out')
+      assert.ok(!ids.includes(quiet), 'a track with no evidence is left out')
+      assert.ok(ids.includes(reused) && ids.includes(track))
+    }
+    const shown = await list({ cookie: await sessionFor(kol.id) })
+    assert.ok(shown.every((s) => s.quality.pass))
+    assert.deepEqual(shown.find((s) => s.id === reused)!.sightings.reusers, 2)
+    assert.deepEqual(shown.find((s) => s.id === reused)!.quality, { pass: true, reason: 'plays' })
+
+    const all = await list({ cookie: await sessionFor(admin.id) }, '&hidden=1')
+    const verdict = (id: string) => all.find((s) => s.id === id)?.quality
+    assert.deepEqual(verdict(voice), { pass: false, reason: 'speech' })
+    assert.deepEqual(verdict(quiet), { pass: false, reason: 'no_evidence' })
+    assert.deepEqual(verdict(track), { pass: true, reason: 'plays' })
+    assert.equal(all.find((s) => s.id === voice)!.sightings.reusers, 0)
+    // A kol asking for hidden=1 still gets the gated list.
+    assert.ok(!(await list({ cookie: await sessionFor(kol.id) }, '&hidden=1')).some((s) => s.id === voice))
+    // rankSounds itself keeps every row unless asked to drop the failing ones.
+    assert.ok(rankSounds({ windowDays: 14, limit: 500 }).some((s) => s.id === voice))
+    assert.ok(!rankSounds({ windowDays: 14, limit: 500, onlyQualified: true }).some((s) => s.id === voice))
+  })
+
+  it('our own posts clearly above the account’s usual let an unsighted original sound through', () => {
+    const now = new Date()
+    const at = (d: number) => new Date(now.getTime() - d * 86_400_000).toISOString()
+    const acct = makeUser('gate-acct')
+    const loved = idAt(T + 50)
+    const meh = idAt(T + 60)
+    db.insert(sounds).values([
+      { id: loved, title: 'original sound', author: 'Loop Maker', original: true, lastSeenAt: at(1) },
+      { id: meh, title: 'original sound', author: 'Meh Maker', original: true, lastSeenAt: at(1) },
+    ]).run()
+    const pub = (views: number, soundId: string | null) =>
+      db.insert(publications)
+        .values({ id: randomUUID(), contentId: makeContent({ status: 'PUBLISHED' }), userId: acct.id, platform: 'tiktok', publishedUrl: `https://www.tiktok.com/@a/video/${randomUUID()}`, publishedAt: at(2), views, soundId })
+        .run()
+    // Account median 100: `loved` posts run 3×, `meh` posts at 1×.
+    for (const v of [100, 100, 100, 100]) pub(v, null)
+    for (const v of [300, 300, 300]) pub(v, loved)
+    for (const v of [100, 100, 100]) pub(v, meh)
+    const rows = rankSounds({ windowDays: 14, limit: 500, now, onlyQualified: true })
+    assert.deepEqual(rows.find((s) => s.id === loved)?.quality, { pass: true, reason: 'ours' })
+    assert.equal(rows.find((s) => s.id === meh), undefined)
+  })
+})
+
 describe('the public-count sync fills the publication’s sound', () => {
   it('from the TikTok page it reads, and puts the sound in the bank dated by the post', async () => {
     db.update(publications).set({ publishedUrl: null }).run()
@@ -489,7 +627,11 @@ describe('review 2: limits, sources, the ranking cache', () => {
     const cookie = await sessionFor(kol.id)
     const first = (await call(app, 'GET', '/api/sounds?window=7', { cookie })).json().sounds.length
     // A row written behind the bank's back (no clearing) is not seen until the cache expires…
+    // (with a sighting by another creator over the plays floor, so it passes the quality gate).
     db.insert(sounds).values({ id: '955555', title: 'Behind', author: 'X', original: false }).run()
+    db.insert(soundSightings)
+      .values({ id: randomUUID(), soundId: '955555', videoUrl: 'https://www.tiktok.com/@behind.user/video/1', videoAuthor: 'behind.user', plays: 50_000, source: 'viral', seenAt: new Date().toISOString() })
+      .run()
     assert.equal((await call(app, 'GET', '/api/sounds?window=7', { cookie })).json().sounds.length, first)
     assert.ok(!rankSoundsCached({ windowDays: 7, limit: 200 }).some((x) => x.id === '955555'), 'cached')
     const later = rankSoundsCached({ windowDays: 7, limit: 200 }, Date.now() + 61_000)

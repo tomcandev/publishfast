@@ -416,9 +416,10 @@ read; `429 {reason: "daily_limit"}` after 30 pastes a day per person. Not for to
 
 ### `GET /api/sounds?window=<7|14|30>&limit=<1-200>` (any signed-in person; `sounds`, `read` and admin tokens)
 
-Default `window=14`, `limit=50`. Active sounds, best first (admins may add `hidden=1` to include hidden ones;
-admins also get `note`). The ranking is computed at most once a minute per window and cleared whenever the
-bank changes:
+Default `window=14`, `limit=50`. Active sounds that pass the **quality gate** (below), best first. Admins
+may add `hidden=1` to get everything: hidden sounds and sounds that fail the gate, each with its `quality`
+verdict (admins also get `note`; `hidden=1` from anyone else is ignored). The ranking is computed at most
+once a minute per window and cleared whenever the bank changes:
 
 ```json
 { "window": 14, "sounds": [ {
@@ -427,7 +428,8 @@ bank changes:
   "copyText": "Lofi Study Loop Example Band", "status": "active",
   "ours": { "posts": 4, "medianRatio": 2.3, "enough": true },
   "sightings": { "count": 2, "bestPlays": 98765, "bestRank": 3, "sources": ["trend"],
-                 "newestVideoUrl": "…", "bestVideoUrl": "…", "bestVideoPlays": 98765 },
+                 "newestVideoUrl": "…", "bestVideoUrl": "…", "bestVideoPlays": 98765, "reusers": 2 },
+  "quality": { "pass": true, "reason": "ours" },
   "score": 9.12, "lastSeenAt": "…" } ] }
 ```
 
@@ -438,6 +440,25 @@ bank changes:
   user, same platform, same window); `enough` is false below 3 posts (the web shows "not enough of our own
   posts yet").
 - Sightings count whenever they were seen; `staleness` ages them.
+- `sightings.reusers`: how many creators other than the sound's own author were seen using it (below).
+
+**Quality gate** (`soundQuality` in `server/src/lib/sounds.ts`). The list is for background audio people
+add to a carousel, not someone talking. A sound passes, with `quality.reason`, on the first of:
+
+1. `ours`: `ours.enough` (3+ of our posts in the window) and `ours.medianRatio ≥ 1.25`;
+2. an **original sound** (TikTok's `original` flag, or a title starting "original sound", "som original",
+   "âm thanh gốc", "sonido original" …) used by fewer than **2** other creators fails as `speech`;
+3. `trend`: a sighting by another creator has a trending-list `rank`;
+4. `plays`: a sighting by another creator has at least **20,000** plays;
+5. otherwise it fails as `no_evidence`.
+
+"Another creator" is the sighting video's handle (`video_author`, else the `/@handle/video/` part of its
+URL), minus the sound's own author: a handle whose letters and digits (case and fancy Unicode folded)
+match the sound's `author` or the name after "original sound -", or whose video id was made within 300 s of
+the sound id (TikTok ids carry their creation second in the high 32 bits; an original sound is made with
+the video that uploaded it). Trend and plays evidence count only from other creators' videos. Our own
+posts are never sightings, so they do not count as reusers. The score is unchanged: the gate only decides
+what is shown. Nothing is downloaded or listened to; the gate uses only what the bank already stores.
 
 **Ranking** (`soundScore` in `server/src/lib/sounds.ts`):
 

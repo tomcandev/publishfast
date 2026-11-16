@@ -28,6 +28,15 @@ export function ourPostsText(s: RankedSound) {
   return enough ? `our posts: ${posts}${ratio}` : `our posts: ${posts}${ratio} · not enough of our own posts yet`
 }
 
+/** Why a sound is left out of the list people see (admins see it under "Show hidden"). */
+const QUALITY_TITLE: Record<RankedSound['quality']['reason'], string> = {
+  ours: '',
+  trend: '',
+  plays: '',
+  speech: 'An original sound used by fewer than 2 other creators: probably someone talking',
+  no_evidence: 'No trend rank, no outside video over 20K plays, and our posts are not clearly above usual',
+}
+
 export function SoundBadges({ s }: { s: RankedSound }) {
   return (
     <>
@@ -35,6 +44,11 @@ export function SoundBadges({ s }: { s: RankedSound }) {
       {s.sightings.sources.includes('viral') && <span className="badge badge-claimed">viral</span>}
       {s.ours.posts > 0 && <span className="badge badge-published">ours</span>}
       {s.status === 'hidden' && <span className="badge badge-draft">hidden</span>}
+      {s.quality && !s.quality.pass && (
+        <span className="badge badge-draft" title={QUALITY_TITLE[s.quality.reason]}>
+          {s.quality.reason === 'speech' ? 'speech?' : 'not enough evidence'}
+        </span>
+      )}
     </>
   )
 }
@@ -92,7 +106,8 @@ export function Sounds() {
       <div className="stack" style={{ gap: 4 }}>
         <h1>Sounds</h1>
         <p className="hint">
-          Sounds worth using, best first. Tap <strong>Copy</strong>, then paste it into TikTok's “Add sound” search.
+          Background sounds worth using, best first: music with proof it works, not voiceovers. Tap{' '}
+          <strong>Copy</strong>, then paste it into TikTok's “Add sound” search.
         </p>
       </div>
 
@@ -192,6 +207,11 @@ function SoundRow({ s, place, isAdmin, onChanged }: { s: RankedSound; place: num
           <SoundBadges s={s} />
         </div>
         {ours && <div className="hint">{ours}</div>}
+        {s.sightings.reusers > 0 && (
+          <div className="hint">
+            Used by {s.sightings.reusers} other creator{s.sightings.reusers === 1 ? '' : 's'}
+          </div>
+        )}
         {example && (
           <div className="hint">
             Best outside video:{' '}

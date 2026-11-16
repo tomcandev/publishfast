@@ -156,6 +156,127 @@ export function soundScore(i: {
 /** At least this many of our own posts before the ratio is trusted (the web shows a note below it). */
 export const ENOUGH_OWN_POSTS = 3
 
+/* ---------- the quality gate ---------- */
+
+/**
+ * The list people see is background audio, not someone talking. A sound is
+ * shown when one of these holds (checked in this order):
+ *
+ *   ours   — at least ENOUGH_OWN_POSTS of our posts with it in the window, and
+ *            their median views ratio is at least OURS_RATIO;
+ *   trend  — a sighting by another creator has a trending-list rank;
+ *   plays  — a sighting by another creator has at least PLAYS_FLOOR plays.
+ *
+ * An original sound (TikTok's flag, or a title like "original sound…") must
+ * also be used by at least MIN_REUSERS creators other than its own author
+ * before trend or plays count: one person's original sound is almost always
+ * their voice. "Another creator" is the sighting video's handle (stored, else
+ * from `/@handle/video/<id>`), minus the sound's own author: a handle whose
+ * letters match the sound's author or the name after "original sound -", or
+ * whose video id was made within ORIGIN_SECONDS of the sound id (TikTok ids
+ * carry their creation second in the high 32 bits, and an original sound is
+ * made with the video that uploaded it).
+ */
+export const MIN_REUSERS = 2
+export const PLAYS_FLOOR = 20_000
+export const OURS_RATIO = 1.25
+export const ORIGIN_SECONDS = 300
+
+export type QualityReason = 'ours' | 'trend' | 'plays' | 'speech' | 'no_evidence'
+export type Quality = { pass: boolean; reason: QualityReason }
+
+/** TikTok's "original sound" title in the languages seen in the bank (and a few more). */
+const GENERIC_ORIGINAL =
+  /^\s*(original sound|originalton|original audio|som original|sonido original|son original|suono originale|âm thanh gốc|suara asli|เสียงต้นฉบับ|оригинальный звук|orijinal ses|原声|オリジナル楽曲)/i
+
+/** True for a sound that is (or is titled as) one creator's original sound. */
+export function isOriginalLike(s: { original: boolean; title: string | null }) {
+  return s.original || GENERIC_ORIGINAL.test(s.title ?? '')
+}
+
+/** Letters and digits only, lower case, fancy Unicode letters folded ("𝐈𝐯𝐚́𝐧" -> "ivan"). */
+export function foldName(s: string) {
+  return s.normalize('NFKC').normalize('NFD').toLowerCase().replace(/[^a-z0-9]/g, '')
+}
+
+/** The names a sound's own author may post under: its author, and the name after "original sound -". */
+function ownerNames(s: { title: string | null; author: string | null }) {
+  const names = new Set<string>()
+  const add = (v: string | null | undefined) => {
+    const f = foldName(v ?? '')
+    if (f.length >= 3) names.add(f)
+  }
+  add(s.author)
+  const title = s.title ?? ''
+  const m = GENERIC_ORIGINAL.exec(title)
+  if (m) add(title.slice(m[0].length).replace(/^\s*[-–—:]\s*/, ''))
+  return names
+}
+
+/** The second a TikTok id was made (its high 32 bits), or null. */
+export function idSeconds(id: string | null | undefined) {
+  if (!id || !/^\d{15,25}$/.test(id)) return null
+  return Number(BigInt(id) >> 32n)
+}
+
+/** The video's handle (lower case): the stored author, else the `/@handle/video/` part of its URL. */
+export function sightingHandle(x: { videoAuthor: string | null; videoUrl: string }) {
+  if (x.videoAuthor?.trim()) return x.videoAuthor.trim().toLowerCase()
+  const at = x.videoUrl.indexOf('/@')
+  if (at < 0) return null
+  const end = x.videoUrl.indexOf('/', at + 2)
+  const handle = x.videoUrl.slice(at + 2, end < 0 ? undefined : end)
+  return handle ? handle.toLowerCase() : null
+}
+
+function videoIdOf(url: string) {
+  const at = url.indexOf('/video/')
+  if (at < 0) return null
+  const id = /^\d+/.exec(url.slice(at + 7, at + 7 + 30))
+  return id ? id[0] : null
+}
+
+type SightingEvidence = { handle: string | null; videoId: string | null; plays: number; rank: number | null }
+
+/**
+ * What the sightings by creators other than the sound's own author show:
+ * how many of them there are, their best plays and their best rank.
+ */
+export function outsideEvidence(s: { id: string; title: string | null; author: string | null }, list: SightingEvidence[]) {
+  const names = ownerNames(s)
+  const soundAt = idSeconds(s.id)
+  const owners = new Set<string>()
+  for (const x of list) {
+    if (!x.handle) continue
+    const at = idSeconds(x.videoId)
+    const madeTogether = soundAt !== null && at !== null && Math.abs(at - soundAt) <= ORIGIN_SECONDS
+    if (madeTogether || names.has(foldName(x.handle))) owners.add(x.handle)
+  }
+  const reusers = new Set<string>()
+  let bestPlays = 0
+  let bestRank: number | null = null
+  for (const x of list) {
+    if (!x.handle || owners.has(x.handle)) continue
+    reusers.add(x.handle)
+    if (x.plays > bestPlays) bestPlays = x.plays
+    if (x.rank !== null && (bestRank === null || x.rank < bestRank)) bestRank = x.rank
+  }
+  return { reusers: reusers.size, bestPlays, bestRank }
+}
+
+/** The gate itself (see the comment above MIN_REUSERS). */
+export function soundQuality(i: {
+  originalLike: boolean
+  ours: { enough: boolean; medianRatio: number | null }
+  outside: { reusers: number; bestPlays: number; bestRank: number | null }
+}): Quality {
+  if (i.ours.enough && i.ours.medianRatio !== null && i.ours.medianRatio >= OURS_RATIO) return { pass: true, reason: 'ours' }
+  if (i.originalLike && i.outside.reusers < MIN_REUSERS) return { pass: false, reason: 'speech' }
+  if (i.outside.bestRank !== null) return { pass: true, reason: 'trend' }
+  if (i.outside.bestPlays >= PLAYS_FLOOR) return { pass: true, reason: 'plays' }
+  return { pass: false, reason: 'no_evidence' }
+}
+
 export type RankedSound = {
   id: string
   title: string | null
@@ -175,7 +296,11 @@ export type RankedSound = {
     newestVideoUrl: string | null
     bestVideoUrl: string | null
     bestVideoPlays: number | null
+    /** Creators other than the sound's own author seen using it. */
+    reusers: number
   }
+  /** Whether the sound passes the quality gate, and why (or why not). */
+  quality: Quality
   score: number
   lastSeenAt: string
 }
@@ -185,9 +310,18 @@ const round = (n: number, d: number) => Math.round(n * 10 ** d) / 10 ** d
 /**
  * The ranked bank. Our posts count when their publication time
  * (published_at, else created_at) is inside the window; sightings count
- * whenever they were seen (staleness ages them).
+ * whenever they were seen (staleness ages them). Every row carries its
+ * quality verdict; `onlyQualified` drops the ones that fail it.
  */
-export function rankSounds(opts: { windowDays: number; limit: number; includeHidden?: boolean; withNotes?: boolean; now?: Date }): RankedSound[] {
+export function rankSounds(opts: {
+  windowDays: number
+  limit: number
+  includeHidden?: boolean
+  withNotes?: boolean
+  /** Leave out sounds that fail the quality gate. */
+  onlyQualified?: boolean
+  now?: Date
+}): RankedSound[] {
   const now = opts.now ?? new Date()
   const since = now.getTime() - opts.windowDays * DAY_MS
   const bank = db.select().from(sounds).all().filter((s) => opts.includeHidden || s.status === 'active')
@@ -237,11 +371,12 @@ export function rankSounds(opts: { windowDays: number; limit: number; includeHid
     sources: Set<string>
     newest: { seenAt: string; videoUrl: string } | null
     best: { plays: number; seenAt: string; videoUrl: string; rawPlays: number | null } | null
+    evidence: SightingEvidence[]
   }
   const seenBySound = new Map<string, Seen>()
   for (const x of db.select().from(soundSightings).all()) {
     let e = seenBySound.get(x.soundId)
-    if (!e) seenBySound.set(x.soundId, (e = { count: 0, bestPlays: 0, bestRank: null, sources: new Set(), newest: null, best: null }))
+    if (!e) seenBySound.set(x.soundId, (e = { count: 0, bestPlays: 0, bestRank: null, sources: new Set(), newest: null, best: null, evidence: [] }))
     e.count++
     const plays = x.plays ?? 0
     if (plays > e.bestPlays) e.bestPlays = plays
@@ -251,6 +386,12 @@ export function rankSounds(opts: { windowDays: number; limit: number; includeHid
     if (!e.best || plays > e.best.plays || (plays === e.best.plays && x.seenAt > e.best.seenAt)) {
       e.best = { plays, seenAt: x.seenAt, videoUrl: x.videoUrl, rawPlays: x.plays }
     }
+    e.evidence.push({
+      handle: sightingHandle(x),
+      videoId: videoIdOf(x.videoUrl),
+      plays,
+      rank: typeof x.rank === 'number' && x.rank > 0 ? x.rank : null,
+    })
   }
 
   const ranked = bank.map((s): RankedSound & { rawScore: number } => {
@@ -260,6 +401,9 @@ export function rankSounds(opts: { windowDays: number; limit: number; includeHid
     const bestPlays = seen?.bestPlays ?? 0
     const bestRank = seen?.bestRank ?? null
     const rawScore = soundScore({ ourMedianRatio, ourPosts: ours.posts, bestPlays, bestRank, lastSeenAt: s.lastSeenAt, now })
+    const enough = ours.posts >= ENOUGH_OWN_POSTS
+    const outside = outsideEvidence(s, seen?.evidence ?? [])
+    const quality = soundQuality({ originalLike: isOriginalLike(s), ours: { enough, medianRatio: ourMedianRatio }, outside })
     return {
       id: s.id,
       title: s.title,
@@ -269,7 +413,7 @@ export function rankSounds(opts: { windowDays: number; limit: number; includeHid
       copyText: copyText(s),
       status: s.status,
       ...(opts.withNotes ? { note: s.note } : {}),
-      ours: { posts: ours.posts, medianRatio: ourMedianRatio === null ? null : round(ourMedianRatio, 2), enough: ours.posts >= ENOUGH_OWN_POSTS },
+      ours: { posts: ours.posts, medianRatio: ourMedianRatio === null ? null : round(ourMedianRatio, 2), enough },
       sightings: {
         count: seen?.count ?? 0,
         bestPlays,
@@ -278,14 +422,17 @@ export function rankSounds(opts: { windowDays: number; limit: number; includeHid
         newestVideoUrl: seen?.newest?.videoUrl ?? null,
         bestVideoUrl: seen?.best?.videoUrl ?? null,
         bestVideoPlays: seen?.best?.rawPlays ?? null,
+        reusers: outside.reusers,
       },
+      quality,
       score: round(rawScore, 3),
       lastSeenAt: s.lastSeenAt,
       rawScore,
     }
   })
   ranked.sort((a, b) => b.rawScore - a.rawScore || b.lastSeenAt.localeCompare(a.lastSeenAt) || a.id.localeCompare(b.id))
-  return ranked.slice(0, opts.limit).map(({ rawScore: _raw, ...row }) => row)
+  const shown = opts.onlyQualified ? ranked.filter((r) => r.quality.pass) : ranked
+  return shown.slice(0, opts.limit).map(({ rawScore: _raw, ...row }) => row)
 }
 
 /* ---------- the ranking, cached for the route ---------- */
@@ -301,7 +448,9 @@ export function _clearRankingCache() {
 
 /**
  * The ranking as the route serves it: computed at most once a minute per
- * window (and hidden-or-not), notes stripped unless asked for, then cut to `limit`.
+ * window (and hidden-or-not), notes stripped unless asked for, then cut to
+ * `limit`. Without `includeHidden` only sounds that pass the quality gate
+ * are served; with it (admins' "Show hidden") everything is, each with its verdict.
  */
 export function rankSoundsCached(opts: { windowDays: number; limit: number; includeHidden?: boolean; withNotes?: boolean }, now = Date.now()) {
   const key = `${opts.windowDays}|${opts.includeHidden ? 1 : 0}`
@@ -309,7 +458,14 @@ export function rankSoundsCached(opts: { windowDays: number; limit: number; incl
   if (!entry || now - entry.at >= RANKING_CACHE_MS || now < entry.at) {
     entry = {
       at: now,
-      rows: rankSounds({ windowDays: opts.windowDays, limit: Number.MAX_SAFE_INTEGER, includeHidden: opts.includeHidden, withNotes: true, now: new Date(now) }),
+      rows: rankSounds({
+        windowDays: opts.windowDays,
+        limit: Number.MAX_SAFE_INTEGER,
+        includeHidden: opts.includeHidden,
+        onlyQualified: !opts.includeHidden,
+        withNotes: true,
+        now: new Date(now),
+      }),
     }
     rankingCache.set(key, entry)
   }
